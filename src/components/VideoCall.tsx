@@ -5,15 +5,14 @@ import React, {useState, useRef, useEffect} from 'react';
 const VideoCall = () => {
     const [connected, setConnected] = useState(false);
     const [userId] = useState(`user_${Math.floor(Math.random() * 10000)}`);
-    const [users, setUsers] = useState([]);
-    const [callPartner, setCallPartner] = useState(null);
+    const [peers, setPeers] = useState({});
 
     const socketRef = useRef(null);
     const localVideoRef = useRef(null);
-    const remoteVideoRef = useRef(null);
-    const peerConnectionRef = useRef(null);
     const localStreamRef = useRef(null);
+    const peerConnectionsRef = useRef({});
 
+    // Подключение к серверу и инициализация медиа
     const connectToServer = async () => {
         try {
             // Получаем доступ к камере и микрофону
@@ -24,11 +23,9 @@ const VideoCall = () => {
 
             localStreamRef.current = stream;
 
-            // Проверяем, что ссылка на видео-элемент существует
+            // Отображаем локальное видео
             if (localVideoRef.current) {
                 localVideoRef.current.srcObject = stream;
-            } else {
-                console.error('localVideoRef.current is null');
             }
 
             // Подключаемся к WebSocket серверу
@@ -44,10 +41,17 @@ const VideoCall = () => {
                 const message = JSON.parse(event.data);
                 console.log('Получено сообщение:', message);
 
-                // Обрабатываем список пользователей
+                // Обрабатываем список пользователей - создаем соединения со всеми
                 if (message.type === 'user-list' && message.data && message.data.users) {
                     const otherUsers = message.data.users.filter(user => user !== userId);
-                    setUsers(otherUsers);
+
+                    // Для каждого нового пользователя создаем соединение
+                    otherUsers.forEach(user => {
+                        if (!peerConnectionsRef.current[user]) {
+                            // Создаем соединение и отправляем оффер
+                            createPeerConnection(user, true);
+                        }
+                    });
                 }
 
                 // Обрабатываем WebRTC сигналы
@@ -71,16 +75,23 @@ const VideoCall = () => {
             socket.onclose = () => {
                 console.log('WebSocket закрыт');
                 setConnected(false);
+                cleanupConnections();
             };
         } catch (err) {
             console.error('Ошибка:', err);
         }
     };
 
-    const createPeerConnection = () => {
+    // Создание WebRTC соединения
+    const createPeerConnection = (peerId, isInitiator) => {
+        console.log(`Создание соединения с ${peerId}, инициатор: ${isInitiator}`);
+
         const pc = new RTCPeerConnection({
             iceServers: [{urls: 'stun:stun.l.google.com:19302'}]
         });
+
+        // Сохраняем соединение
+        peerConnectionsRef.current[peerId] = pc;
 
         // Добавляем локальные треки
         if (localStreamRef.current) {
@@ -89,21 +100,50 @@ const VideoCall = () => {
             });
         }
 
+        // Создаем контейнер для видео, если его еще нет
+        if (!document.getElementById(`video-${peerId}`)) {
+            const videoContainer = document.getElementById('remote-videos');
+            if (videoContainer) {
+                const videoElement = document.createElement('video');
+                videoElement.id = `video-${peerId}`;
+                videoElement.autoplay = true;
+                videoElement.playsInline = true;
+                videoElement.style.width = '200px';
+                videoElement.style.height = '150px';
+                videoElement.style.margin = '5px';
+                videoElement.style.backgroundColor = '#000';
+
+                const label = document.createElement('div');
+                label.textContent = peerId;
+                label.style.textAlign = 'center';
+
+                const wrapper = document.createElement('div');
+                wrapper.id = `wrapper-${peerId}`;
+                wrapper.style.display = 'inline-block';
+                wrapper.appendChild(videoElement);
+                wrapper.appendChild(label);
+
+                videoContainer.appendChild(wrapper);
+
+                // Обновляем состояние для ререндера
+                setPeers(prev => ({...prev, [peerId]: true}));
+            }
+        }
+
         // Обрабатываем входящие треки
         pc.ontrack = (event) => {
-            if (remoteVideoRef.current) {
-                remoteVideoRef.current.srcObject = event.streams[0];
-            } else {
-                console.error('remoteVideoRef.current is null');
+            const videoElement = document.getElementById(`video-${peerId}`);
+            if (videoElement) {
+                videoElement.srcObject = event.streams[0];
             }
         };
 
         // Отправляем ICE кандидатов
         pc.onicecandidate = (event) => {
-            if (event.candidate && socketRef.current && callPartner) {
+            if (event.candidate && socketRef.current) {
                 socketRef.current.send(JSON.stringify({
                     type: 'ice-candidate',
-                    to: callPartner,
+                    to: peerId,
                     data: {
                         candidate: event.candidate.candidate,
                         sdpMid: event.candidate.sdpMid,
@@ -113,35 +153,34 @@ const VideoCall = () => {
             }
         };
 
-        peerConnectionRef.current = pc;
+        // Если мы инициатор, создаем и отправляем оффер
+        if (isInitiator) {
+            pc.createOffer()
+                .then(offer => pc.setLocalDescription(offer))
+                .then(() => {
+                    if (socketRef.current) {
+                        socketRef.current.send(JSON.stringify({
+                            type: 'offer',
+                            to: peerId,
+                            data: {sdp: pc.localDescription.sdp}
+                        }));
+                    }
+                })
+                .catch(err => console.error('Ошибка при создании оффера:', err));
+        }
+
         return pc;
     };
 
-    const startCall = async (targetId) => {
-        setCallPartner(targetId);
-        const pc = createPeerConnection();
-
-        try {
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-
-            if (socketRef.current) {
-                socketRef.current.send(JSON.stringify({
-                    type: 'offer',
-                    to: targetId,
-                    data: {sdp: pc.localDescription.sdp}
-                }));
-            } else {
-                console.error('socketRef.current is null');
-            }
-        } catch (err) {
-            console.error('Ошибка при создании предложения:', err);
-        }
-    };
-
+    // Обработка входящего оффера
     const handleOffer = async (message) => {
-        setCallPartner(message.from);
-        const pc = createPeerConnection();
+        const peerId = message.from;
+
+        // Создаем соединение, если его еще нет
+        let pc = peerConnectionsRef.current[peerId];
+        if (!pc) {
+            pc = createPeerConnection(peerId, false);
+        }
 
         try {
             await pc.setRemoteDescription(new RTCSessionDescription({
@@ -155,46 +194,68 @@ const VideoCall = () => {
             if (socketRef.current) {
                 socketRef.current.send(JSON.stringify({
                     type: 'answer',
-                    to: message.from,
+                    to: peerId,
                     data: {sdp: pc.localDescription.sdp}
                 }));
-            } else {
-                console.error('socketRef.current is null');
             }
         } catch (err) {
-            console.error('Ошибка при обработке предложения:', err);
+            console.error('Ошибка при обработке оффера:', err);
         }
     };
 
+    // Обработка входящего ответа
     const handleAnswer = async (message) => {
-        try {
-            if (peerConnectionRef.current) {
-                await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription({
+        const pc = peerConnectionsRef.current[message.from];
+        if (pc) {
+            try {
+                await pc.setRemoteDescription(new RTCSessionDescription({
                     type: 'answer',
                     sdp: message.data.sdp
                 }));
-            } else {
-                console.error('peerConnectionRef.current is null');
+            } catch (err) {
+                console.error('Ошибка при обработке ответа:', err);
             }
-        } catch (err) {
-            console.error('Ошибка при обработке ответа:', err);
         }
     };
 
+    // Обработка ICE кандидатов
     const handleIceCandidate = async (message) => {
-        try {
-            if (peerConnectionRef.current) {
-                await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate({
+        const pc = peerConnectionsRef.current[message.from];
+        if (pc) {
+            try {
+                await pc.addIceCandidate(new RTCIceCandidate({
                     candidate: message.data.candidate,
                     sdpMid: message.data.sdpMid,
                     sdpMLineIndex: message.data.sdpMLineIndex
                 }));
-            } else {
-                console.error('peerConnectionRef.current is null');
+            } catch (err) {
+                console.error('Ошибка при добавлении ICE кандидата:', err);
             }
-        } catch (err) {
-            console.error('Ошибка при добавлении ICE кандидата:', err);
         }
+    };
+
+    // Очистка соединений
+    const cleanupConnections = () => {
+        // Закрываем все peer connections
+        Object.values(peerConnectionsRef.current).forEach(pc => {
+            if (pc) {
+                pc.close();
+            }
+        });
+        peerConnectionsRef.current = {};
+
+        // Останавливаем все треки
+        if (localStreamRef.current) {
+            localStreamRef.current.getTracks().forEach(track => track.stop());
+        }
+
+        // Очищаем видео элементы
+        const videoContainer = document.getElementById('remote-videos');
+        if (videoContainer) {
+            videoContainer.innerHTML = '';
+        }
+
+        setPeers({});
     };
 
     // Очистка ресурсов при размонтировании
@@ -203,70 +264,72 @@ const VideoCall = () => {
             if (socketRef.current) {
                 socketRef.current.close();
             }
-
-            if (peerConnectionRef.current) {
-                peerConnectionRef.current.close();
-            }
-
-            if (localStreamRef.current) {
-                localStreamRef.current.getTracks().forEach(track => track.stop());
-            }
+            cleanupConnections();
         };
     }, []);
 
     return (
         <div style={{padding: '20px'}}>
-            <h2>Простой видеочат</h2>
+            <h2>Групповой видеочат</h2>
             <p>Ваш ID: {userId}</p>
 
             {!connected ? (
-                <button onClick={connectToServer}>Подключиться</button>
+                <button
+                    onClick={connectToServer}
+                    style={{
+                        padding: '10px 20px',
+                        backgroundColor: '#4CAF50',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '16px'
+                    }}
+                >
+                    Подключиться к комнате
+                </button>
             ) : (
+                <button
+                    onClick={() => {
+                        if (socketRef.current) {
+                            socketRef.current.close();
+                        }
+                        cleanupConnections();
+                        setConnected(false);
+                    }}
+                    style={{
+                        padding: '10px 20px',
+                        backgroundColor: '#f44336',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '16px'
+                    }}
+                >
+                    Отключиться
+                </button>
+            )}
+
+            <div style={{marginTop: '20px'}}>
+                <div style={{marginBottom: '20px'}}>
+                    <h3>Ваше видео</h3>
+                    <video
+                        ref={localVideoRef}
+                        autoPlay
+                        muted
+                        playsInline
+                        style={{width: '320px', height: '240px', backgroundColor: '#000'}}
+                    />
+                </div>
+
                 <div>
-                    <p>Подключено к серверу</p>
-
-                    <div style={{display: 'flex', gap: '20px', marginBottom: '20px'}}>
-                        <div>
-                            <h3>Ваше видео</h3>
-                            <video
-                                ref={localVideoRef}
-                                autoPlay
-                                muted
-                                playsInline
-                                style={{width: '320px', height: '240px', backgroundColor: '#000'}}
-                            />
-                        </div>
-
-                        <div>
-                            <h3>Собеседник</h3>
-                            <video
-                                ref={remoteVideoRef}
-                                autoPlay
-                                playsInline
-                                style={{width: '320px', height: '240px', backgroundColor: '#000'}}
-                            />
-                        </div>
-                    </div>
-
-                    <div>
-                        <h3>Доступные пользователи:</h3>
-                        {users.length === 0 ? (
-                            <p>Нет других пользователей</p>
-                        ) : (
-                            <ul>
-                                {users.map(user => (
-                                    <li key={user}>
-                                        {user}
-                                        <button onClick={() => startCall(user)}>
-                                            Позвонить
-                                        </button>
-                                    </li>
-                                ))}
-                            </ul>
-                        )}
+                    <h3>Участники комнаты</h3>
+                    <div id="remote-videos" style={{display: 'flex', flexWrap: 'wrap', gap: '10px'}}>
+                        {/* Сюда будут динамически добавляться видео других участников */}
                     </div>
                 </div>
-            )}
+            </div>
         </div>
     );
 };
