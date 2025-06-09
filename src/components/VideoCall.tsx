@@ -23,7 +23,13 @@ const VideoCall = () => {
             });
 
             localStreamRef.current = stream;
-            localVideoRef.current.srcObject = stream;
+
+            // Проверяем, что ссылка на видео-элемент существует
+            if (localVideoRef.current) {
+                localVideoRef.current.srcObject = stream;
+            } else {
+                console.error('localVideoRef.current is null');
+            }
 
             // Подключаемся к WebSocket серверу
             const socket = new WebSocket(`wss://video-chat-server-production.up.railway.app/ws?id=${userId}`);
@@ -77,13 +83,19 @@ const VideoCall = () => {
         });
 
         // Добавляем локальные треки
-        localStreamRef.current.getTracks().forEach(track => {
-            pc.addTrack(track, localStreamRef.current);
-        });
+        if (localStreamRef.current) {
+            localStreamRef.current.getTracks().forEach(track => {
+                pc.addTrack(track, localStreamRef.current);
+            });
+        }
 
         // Обрабатываем входящие треки
         pc.ontrack = (event) => {
-            remoteVideoRef.current.srcObject = event.streams[0];
+            if (remoteVideoRef.current) {
+                remoteVideoRef.current.srcObject = event.streams[0];
+            } else {
+                console.error('remoteVideoRef.current is null');
+            }
         };
 
         // Отправляем ICE кандидатов
@@ -113,11 +125,15 @@ const VideoCall = () => {
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
 
-            socketRef.current.send(JSON.stringify({
-                type: 'offer',
-                to: targetId,
-                data: {sdp: pc.localDescription.sdp}
-            }));
+            if (socketRef.current) {
+                socketRef.current.send(JSON.stringify({
+                    type: 'offer',
+                    to: targetId,
+                    data: {sdp: pc.localDescription.sdp}
+                }));
+            } else {
+                console.error('socketRef.current is null');
+            }
         } catch (err) {
             console.error('Ошибка при создании предложения:', err);
         }
@@ -136,11 +152,15 @@ const VideoCall = () => {
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
 
-            socketRef.current.send(JSON.stringify({
-                type: 'answer',
-                to: message.from,
-                data: {sdp: pc.localDescription.sdp}
-            }));
+            if (socketRef.current) {
+                socketRef.current.send(JSON.stringify({
+                    type: 'answer',
+                    to: message.from,
+                    data: {sdp: pc.localDescription.sdp}
+                }));
+            } else {
+                console.error('socketRef.current is null');
+            }
         } catch (err) {
             console.error('Ошибка при обработке предложения:', err);
         }
@@ -148,10 +168,14 @@ const VideoCall = () => {
 
     const handleAnswer = async (message) => {
         try {
-            await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription({
-                type: 'answer',
-                sdp: message.data.sdp
-            }));
+            if (peerConnectionRef.current) {
+                await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription({
+                    type: 'answer',
+                    sdp: message.data.sdp
+                }));
+            } else {
+                console.error('peerConnectionRef.current is null');
+            }
         } catch (err) {
             console.error('Ошибка при обработке ответа:', err);
         }
@@ -159,11 +183,15 @@ const VideoCall = () => {
 
     const handleIceCandidate = async (message) => {
         try {
-            await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate({
-                candidate: message.data.candidate,
-                sdpMid: message.data.sdpMid,
-                sdpMLineIndex: message.data.sdpMLineIndex
-            }));
+            if (peerConnectionRef.current) {
+                await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate({
+                    candidate: message.data.candidate,
+                    sdpMid: message.data.sdpMid,
+                    sdpMLineIndex: message.data.sdpMLineIndex
+                }));
+            } else {
+                console.error('peerConnectionRef.current is null');
+            }
         } catch (err) {
             console.error('Ошибка при добавлении ICE кандидата:', err);
         }
