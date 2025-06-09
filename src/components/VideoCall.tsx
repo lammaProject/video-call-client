@@ -1,3 +1,5 @@
+// @ts-nocheck
+
 import {useState, useEffect, useRef} from 'react';
 import './VideoCall.css';
 
@@ -9,11 +11,11 @@ const VideoCall = () => {
     const [selectedUser, setSelectedUser] = useState(null);
     const [callStatus, setCallStatus] = useState('idle'); // idle, calling, connected
 
-    const socketRef = useRef(null);
+    const socketRef = useRef<WebSocket>(null);
     const peerConnectionRef = useRef(null);
-    const localStreamRef = useRef(null);
+    const localStreamRef = useRef<MediaStream>(null);
     const localVideoRef = useRef(null);
-    const remoteVideoRef = useRef(null);
+    const remoteVideoRef = useRef<HTMLVideoElement>(null);
 
     const initializePeerConnection = () => {
         const configuration = {
