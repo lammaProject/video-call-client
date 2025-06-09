@@ -1,174 +1,60 @@
 // @ts-nocheck
 
-import {useState, useEffect, useRef} from 'react';
-import './VideoCall.css';
+import React, {useState, useRef, useEffect} from 'react';
 
 const VideoCall = () => {
-    const [socketUrl, setSocketUrl] = useState('wss://video-chat-server-production.up.railway.app/ws');
-    const [userId, setUserId] = useState(`user_${Math.floor(Math.random() * 1000000)}`);
-    const [isConnected, setIsConnected] = useState(false);
+    const [connected, setConnected] = useState(false);
+    const [userId] = useState(`user_${Math.floor(Math.random() * 10000)}`);
     const [users, setUsers] = useState([]);
-    const [selectedUser, setSelectedUser] = useState(null);
-    const [callStatus, setCallStatus] = useState('idle'); // idle, calling, connected
+    const [callPartner, setCallPartner] = useState(null);
 
-    const socketRef = useRef<WebSocket>(null);
-    const peerConnectionRef = useRef(null);
-    const localStreamRef = useRef<MediaStream>(null);
+    const socketRef = useRef(null);
     const localVideoRef = useRef(null);
-    const remoteVideoRef = useRef<HTMLVideoElement>(null);
+    const remoteVideoRef = useRef(null);
+    const peerConnectionRef = useRef(null);
+    const localStreamRef = useRef(null);
 
-    const initializePeerConnection = () => {
-        const configuration = {
-            iceServers: [
-                {urls: 'stun:stun.l.google.com:19302'},
-                {urls: 'stun:stun1.l.google.com:19302'},
-            ]
-        };
-
-        const pc = new RTCPeerConnection(configuration);
-        peerConnectionRef.current = pc;
-
-        // Добавление локальных треков в соединение
-        if (localStreamRef.current) {
-            localStreamRef.current.getTracks().forEach(track => {
-                pc.addTrack(track, localStreamRef.current);
-            });
-        }
-
-        // Обработка входящих треков
-        pc.ontrack = (event) => {
-            console.log('Получен удаленный трек', event);
-            if (remoteVideoRef.current) {
-                remoteVideoRef.current.srcObject = event.streams[0];
-            }
-        };
-
-        // Обработка ICE кандидатов
-        pc.onicecandidate = (event) => {
-            if (event.candidate && socketRef.current && selectedUser) {
-                const message = {
-                    type: 'ice-candidate',
-                    to: selectedUser,
-                    data: {
-                        candidate: event.candidate.candidate,
-                        sdpMid: event.candidate.sdpMid,
-                        sdpMLineIndex: event.candidate.sdpMLineIndex
-                    }
-                };
-                socketRef.current.send(JSON.stringify(message));
-            }
-        };
-
-        // Мониторинг состояния соединения
-        pc.oniceconnectionstatechange = () => {
-            console.log('ICE Connection State:', pc.iceConnectionState);
-            if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
-                setCallStatus('connected');
-            } else if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-                setCallStatus('idle');
-            }
-        };
-
-        return pc;
-    };
-
-    // Подключение к WebSocket серверу
     const connectToServer = async () => {
         try {
-            // Получение доступа к камере и микрофону
+            // Получаем доступ к камере и микрофону
             const stream = await navigator.mediaDevices.getUserMedia({
                 video: true,
                 audio: true
             });
 
             localStreamRef.current = stream;
-            if (localVideoRef.current) {
-                localVideoRef.current.srcObject = stream;
-            }
+            localVideoRef.current.srcObject = stream;
 
-            // Подключение к WebSocket
-            const socket = new WebSocket(`${socketUrl}?id=${userId}`);
+            // Подключаемся к WebSocket серверу
+            const socket = new WebSocket(`wss://video-chat-server-production.up.railway.app/ws?id=${userId}`);
             socketRef.current = socket;
 
             socket.onopen = () => {
-                console.log('WebSocket соединение установлено');
-                setIsConnected(true);
+                console.log('WebSocket подключен');
+                setConnected(true);
             };
 
-            socket.onmessage = async (event) => {
+            socket.onmessage = (event) => {
                 const message = JSON.parse(event.data);
                 console.log('Получено сообщение:', message);
 
-                // Обработка различных типов сообщений
-                switch (message.type) {
-                    case 'user-list':
-                        // Обновление списка пользователей
-                        if (message.data && message.data.users) {
-                            // Фильтруем себя из списка
-                            const otherUsers = message.data.users.filter(user => user !== userId);
-                            setUsers(otherUsers);
-                        }
-                        break;
+                // Обрабатываем список пользователей
+                if (message.type === 'user-list' && message.data && message.data.users) {
+                    const otherUsers = message.data.users.filter(user => user !== userId);
+                    setUsers(otherUsers);
+                }
 
-                    case 'offer':
-                        // Обработка входящего предложения звонка
-                        if (!peerConnectionRef.current) {
-                            peerConnectionRef.current = initializePeerConnection();
-                        }
+                // Обрабатываем WebRTC сигналы
+                if (message.type === 'offer' && message.from) {
+                    handleOffer(message);
+                }
 
-                        setSelectedUser(message.from);
-                        setCallStatus('calling');
+                if (message.type === 'answer' && message.from) {
+                    handleAnswer(message);
+                }
 
-                        try {
-                            await peerConnectionRef.current.setRemoteDescription(
-                                new RTCSessionDescription({type: 'offer', sdp: message.data.sdp})
-                            );
-
-                            const answer = await peerConnectionRef.current.createAnswer();
-                            await peerConnectionRef.current.setLocalDescription(answer);
-
-                            const answerMessage = {
-                                type: 'answer',
-                                to: message.from,
-                                data: {
-                                    sdp: peerConnectionRef.current.localDescription.sdp
-                                }
-                            };
-                            socket.send(JSON.stringify(answerMessage));
-                        } catch (err) {
-                            console.error('Ошибка при обработке предложения:', err);
-                        }
-                        break;
-
-                    case 'answer':
-                        // Обработка ответа на звонок
-                        if (peerConnectionRef.current) {
-                            try {
-                                await peerConnectionRef.current.setRemoteDescription(
-                                    new RTCSessionDescription({type: 'answer', sdp: message.data.sdp})
-                                );
-                            } catch (err) {
-                                console.error('Ошибка при обработке ответа:', err);
-                            }
-                        }
-                        break;
-
-                    case 'ice-candidate':
-                        // Добавление ICE кандидата
-                        if (peerConnectionRef.current) {
-                            try {
-                                await peerConnectionRef.current.addIceCandidate(
-                                    new RTCIceCandidate({
-                                        candidate: message.data.candidate,
-                                        sdpMid: message.data.sdpMid,
-                                        sdpMLineIndex: message.data.sdpMLineIndex
-                                    })
-                                );
-                            } catch (err) {
-                                console.error('Ошибка при добавлении ICE кандидата:', err);
-                            }
-                        }
-                        break;
+                if (message.type === 'ice-candidate' && message.from) {
+                    handleIceCandidate(message);
                 }
             };
 
@@ -177,158 +63,175 @@ const VideoCall = () => {
             };
 
             socket.onclose = () => {
-                console.log('WebSocket соединение закрыто');
-                setIsConnected(false);
-                setUsers([]);
-                setCallStatus('idle');
-                cleanupConnection();
+                console.log('WebSocket закрыт');
+                setConnected(false);
             };
         } catch (err) {
-            console.error('Ошибка при подключении:', err);
+            console.error('Ошибка:', err);
         }
     };
 
-    // Инициирование звонка
-    const startCall = async (targetUserId) => {
-        if (!socketRef.current || !isConnected) {
-            alert('Сначала подключитесь к серверу');
-            return;
-        }
+    const createPeerConnection = () => {
+        const pc = new RTCPeerConnection({
+            iceServers: [{urls: 'stun:stun.l.google.com:19302'}]
+        });
 
-        setSelectedUser(targetUserId);
-        setCallStatus('calling');
+        // Добавляем локальные треки
+        localStreamRef.current.getTracks().forEach(track => {
+            pc.addTrack(track, localStreamRef.current);
+        });
 
-        // Создание нового RTCPeerConnection
-        const pc = initializePeerConnection();
+        // Обрабатываем входящие треки
+        pc.ontrack = (event) => {
+            remoteVideoRef.current.srcObject = event.streams[0];
+        };
+
+        // Отправляем ICE кандидатов
+        pc.onicecandidate = (event) => {
+            if (event.candidate && socketRef.current && callPartner) {
+                socketRef.current.send(JSON.stringify({
+                    type: 'ice-candidate',
+                    to: callPartner,
+                    data: {
+                        candidate: event.candidate.candidate,
+                        sdpMid: event.candidate.sdpMid,
+                        sdpMLineIndex: event.candidate.sdpMLineIndex
+                    }
+                }));
+            }
+        };
+
+        peerConnectionRef.current = pc;
+        return pc;
+    };
+
+    const startCall = async (targetId) => {
+        setCallPartner(targetId);
+        const pc = createPeerConnection();
 
         try {
-            // Создание предложения
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
 
-            // Отправка предложения выбранному пользователю
-            const offerMessage = {
+            socketRef.current.send(JSON.stringify({
                 type: 'offer',
-                to: targetUserId,
-                data: {
-                    sdp: pc.localDescription.sdp
-                }
-            };
-            socketRef.current.send(JSON.stringify(offerMessage));
+                to: targetId,
+                data: {sdp: pc.localDescription.sdp}
+            }));
         } catch (err) {
             console.error('Ошибка при создании предложения:', err);
-            setCallStatus('idle');
         }
     };
 
-    // Завершение звонка
-    const endCall = () => {
-        if (peerConnectionRef.current) {
-            peerConnectionRef.current.close();
-            peerConnectionRef.current = null;
-        }
+    const handleOffer = async (message) => {
+        setCallPartner(message.from);
+        const pc = createPeerConnection();
 
-        setCallStatus('idle');
-        setSelectedUser(null);
+        try {
+            await pc.setRemoteDescription(new RTCSessionDescription({
+                type: 'offer',
+                sdp: message.data.sdp
+            }));
 
-        // Если есть удаленное видео, очищаем его
-        if (remoteVideoRef.current) {
-            remoteVideoRef.current.srcObject = null;
-        }
-    };
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
 
-    // Очистка ресурсов при размонтировании компонента
-    const cleanupConnection = () => {
-        if (socketRef.current) {
-            socketRef.current.close();
-            socketRef.current = null;
-        }
-
-        if (peerConnectionRef.current) {
-            peerConnectionRef.current.close();
-            peerConnectionRef.current = null;
-        }
-
-        if (localStreamRef.current) {
-            localStreamRef.current.getTracks().forEach(track => track.stop());
-            localStreamRef.current = null;
-        }
-
-        if (localVideoRef.current) {
-            localVideoRef.current.srcObject = null;
-        }
-
-        if (remoteVideoRef.current) {
-            remoteVideoRef.current.srcObject = null;
+            socketRef.current.send(JSON.stringify({
+                type: 'answer',
+                to: message.from,
+                data: {sdp: pc.localDescription.sdp}
+            }));
+        } catch (err) {
+            console.error('Ошибка при обработке предложения:', err);
         }
     };
 
-    // Очистка ресурсов при размонтировании компонента
+    const handleAnswer = async (message) => {
+        try {
+            await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription({
+                type: 'answer',
+                sdp: message.data.sdp
+            }));
+        } catch (err) {
+            console.error('Ошибка при обработке ответа:', err);
+        }
+    };
+
+    const handleIceCandidate = async (message) => {
+        try {
+            await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate({
+                candidate: message.data.candidate,
+                sdpMid: message.data.sdpMid,
+                sdpMLineIndex: message.data.sdpMLineIndex
+            }));
+        } catch (err) {
+            console.error('Ошибка при добавлении ICE кандидата:', err);
+        }
+    };
+
+    // Очистка ресурсов при размонтировании
     useEffect(() => {
         return () => {
-            cleanupConnection();
+            if (socketRef.current) {
+                socketRef.current.close();
+            }
+
+            if (peerConnectionRef.current) {
+                peerConnectionRef.current.close();
+            }
+
+            if (localStreamRef.current) {
+                localStreamRef.current.getTracks().forEach(track => track.stop());
+            }
         };
     }, []);
 
     return (
-        <div className="video-call-container">
-            <div className="connection-controls">
-                <h2>Видеозвонок</h2>
-                <div className="connection-form">
-                    <input
-                        type="text"
-                        value={socketUrl}
-                        onChange={(e) => setSocketUrl(e.target.value)}
-                        placeholder="WebSocket URL"
-                        disabled={isConnected}
-                    />
-                    <input
-                        type="text"
-                        value={userId}
-                        onChange={(e) => setUserId(e.target.value)}
-                        placeholder="Ваш ID"
-                        disabled={isConnected}
-                    />
-                    {!isConnected ? (
-                        <button onClick={connectToServer}>Подключиться</button>
-                    ) : (
-                        <button onClick={() => {
-                            cleanupConnection();
-                            setIsConnected(false);
-                        }}>Отключиться</button>
-                    )}
-                </div>
-            </div>
+        <div style={{padding: '20px'}}>
+            <h2>Простой видеочат</h2>
+            <p>Ваш ID: {userId}</p>
 
-            {isConnected && (
-                <div className="video-call-interface">
-                    <div className="video-container">
-                        <div className="video-wrapper">
-                            <video ref={localVideoRef} autoPlay muted playsInline className="local-video"/>
-                            <div className="video-label">Вы ({userId})</div>
+            {!connected ? (
+                <button onClick={connectToServer}>Подключиться</button>
+            ) : (
+                <div>
+                    <p>Подключено к серверу</p>
+
+                    <div style={{display: 'flex', gap: '20px', marginBottom: '20px'}}>
+                        <div>
+                            <h3>Ваше видео</h3>
+                            <video
+                                ref={localVideoRef}
+                                autoPlay
+                                muted
+                                playsInline
+                                style={{width: '320px', height: '240px', backgroundColor: '#000'}}
+                            />
                         </div>
-                        <div className="video-wrapper">
-                            <video ref={remoteVideoRef} autoPlay playsInline className="remote-video"/>
-                            <div className="video-label">
-                                {callStatus === 'connected' ? selectedUser : 'Ожидание соединения...'}
-                            </div>
+
+                        <div>
+                            <h3>Собеседник</h3>
+                            <video
+                                ref={remoteVideoRef}
+                                autoPlay
+                                playsInline
+                                style={{width: '320px', height: '240px', backgroundColor: '#000'}}
+                            />
                         </div>
                     </div>
 
-                    <div className="users-list">
-                        <h3>Доступные пользователи</h3>
+                    <div>
+                        <h3>Доступные пользователи:</h3>
                         {users.length === 0 ? (
-                            <p>Нет доступных пользователей</p>
+                            <p>Нет других пользователей</p>
                         ) : (
                             <ul>
-                                {users.map((user) => (
+                                {users.map(user => (
                                     <li key={user}>
                                         {user}
-                                        {callStatus === 'idle' ? (
-                                            <button onClick={() => startCall(user)}>Позвонить</button>
-                                        ) : user === selectedUser ? (
-                                            <button onClick={endCall}>Завершить</button>
-                                        ) : null}
+                                        <button onClick={() => startCall(user)}>
+                                            Позвонить
+                                        </button>
                                     </li>
                                 ))}
                             </ul>
