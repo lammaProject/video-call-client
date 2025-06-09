@@ -5,7 +5,7 @@ import React, {useState, useRef, useEffect} from 'react';
 const VideoCall = () => {
     const [connected, setConnected] = useState(false);
     const [userId] = useState(`user_${Math.floor(Math.random() * 10000)}`);
-    const [peers, setPeers] = useState({});
+    const [remoteVideos, setRemoteVideos] = useState([]);
 
     const socketRef = useRef(null);
     const localVideoRef = useRef(null);
@@ -38,33 +38,38 @@ const VideoCall = () => {
             };
 
             socket.onmessage = (event) => {
-                const message = JSON.parse(event.data);
-                console.log('Получено сообщение:', message);
+                try {
+                    const message = JSON.parse(event.data);
+                    console.log('Получено сообщение:', message);
 
-                // Обрабатываем список пользователей - создаем соединения со всеми
-                if (message.type === 'user-list' && message.data && message.data.users) {
-                    const otherUsers = message.data.users.filter(user => user !== userId);
+                    // Обрабатываем список пользователей - создаем соединения со всеми
+                    if (message.type === 'user-list' && message.data && message.data.users) {
+                        const otherUsers = message.data.users.filter(user => user !== userId);
+                        console.log('Другие пользователи:', otherUsers);
 
-                    // Для каждого нового пользователя создаем соединение
-                    otherUsers.forEach(user => {
-                        if (!peerConnectionsRef.current[user]) {
-                            // Создаем соединение и отправляем оффер
-                            createPeerConnection(user, true);
-                        }
-                    });
-                }
+                        // Для каждого нового пользователя создаем соединение
+                        otherUsers.forEach(user => {
+                            if (!peerConnectionsRef.current[user]) {
+                                // Создаем соединение и отправляем оффер
+                                createPeerConnection(user, true);
+                            }
+                        });
+                    }
 
-                // Обрабатываем WebRTC сигналы
-                if (message.type === 'offer' && message.from) {
-                    handleOffer(message);
-                }
+                    // Обрабатываем WebRTC сигналы
+                    if (message.type === 'offer' && message.from) {
+                        handleOffer(message);
+                    }
 
-                if (message.type === 'answer' && message.from) {
-                    handleAnswer(message);
-                }
+                    if (message.type === 'answer' && message.from) {
+                        handleAnswer(message);
+                    }
 
-                if (message.type === 'ice-candidate' && message.from) {
-                    handleIceCandidate(message);
+                    if (message.type === 'ice-candidate' && message.from) {
+                        handleIceCandidate(message);
+                    }
+                } catch (err) {
+                    console.error('Ошибка при обработке сообщения:', err);
                 }
             };
 
@@ -86,103 +91,117 @@ const VideoCall = () => {
     const createPeerConnection = (peerId, isInitiator) => {
         console.log(`Создание соединения с ${peerId}, инициатор: ${isInitiator}`);
 
-        const pc = new RTCPeerConnection({
-            iceServers: [{urls: 'stun:stun.l.google.com:19302'}]
-        });
-
-        // Сохраняем соединение
-        peerConnectionsRef.current[peerId] = pc;
-
-        // Добавляем локальные треки
-        if (localStreamRef.current) {
-            localStreamRef.current.getTracks().forEach(track => {
-                pc.addTrack(track, localStreamRef.current);
+        try {
+            const pc = new RTCPeerConnection({
+                iceServers: [
+                    {urls: 'stun:stun.l.google.com:19302'},
+                    {urls: 'stun:stun1.l.google.com:19302'}
+                ]
             });
-        }
 
-        // Создаем контейнер для видео, если его еще нет
-        if (!document.getElementById(`video-${peerId}`)) {
-            const videoContainer = document.getElementById('remote-videos');
-            if (videoContainer) {
-                const videoElement = document.createElement('video');
-                videoElement.id = `video-${peerId}`;
-                videoElement.autoplay = true;
-                videoElement.playsInline = true;
-                videoElement.style.width = '200px';
-                videoElement.style.height = '150px';
-                videoElement.style.margin = '5px';
-                videoElement.style.backgroundColor = '#000';
+            // Сохраняем соединение
+            peerConnectionsRef.current[peerId] = pc;
 
-                const label = document.createElement('div');
-                label.textContent = peerId;
-                label.style.textAlign = 'center';
-
-                const wrapper = document.createElement('div');
-                wrapper.id = `wrapper-${peerId}`;
-                wrapper.style.display = 'inline-block';
-                wrapper.appendChild(videoElement);
-                wrapper.appendChild(label);
-
-                videoContainer.appendChild(wrapper);
-
-                // Обновляем состояние для ререндера
-                setPeers(prev => ({...prev, [peerId]: true}));
+            // Добавляем локальные треки
+            if (localStreamRef.current) {
+                localStreamRef.current.getTracks().forEach(track => {
+                    pc.addTrack(track, localStreamRef.current);
+                });
             }
-        }
 
-        // Обрабатываем входящие треки
-        pc.ontrack = (event) => {
-            const videoElement = document.getElementById(`video-${peerId}`);
-            if (videoElement) {
-                videoElement.srcObject = event.streams[0];
-            }
-        };
+            // Добавляем видео элемент для этого пира
+            setRemoteVideos(prev => {
+                // Проверяем, не добавлен ли уже этот пользователь
+                if (!prev.find(p => p.id === peerId)) {
+                    return [...prev, {id: peerId, stream: null}];
+                }
+                return prev;
+            });
 
-        // Отправляем ICE кандидатов
-        pc.onicecandidate = (event) => {
-            if (event.candidate && socketRef.current) {
-                socketRef.current.send(JSON.stringify({
-                    type: 'ice-candidate',
-                    to: peerId,
-                    data: {
-                        candidate: event.candidate.candidate,
-                        sdpMid: event.candidate.sdpMid,
-                        sdpMLineIndex: event.candidate.sdpMLineIndex
+            // Обрабатываем входящие треки
+            pc.ontrack = (event) => {
+                console.log(`Получен трек от ${peerId}`, event.streams[0]);
+
+                setRemoteVideos(prev => {
+                    return prev.map(p => {
+                        if (p.id === peerId) {
+                            return {...p, stream: event.streams[0]};
+                        }
+                        return p;
+                    });
+                });
+            };
+
+            // Отправляем ICE кандидатов
+            pc.onicecandidate = (event) => {
+                if (event.candidate && socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+                    socketRef.current.send(JSON.stringify({
+                        type: 'ice-candidate',
+                        to: peerId,
+                        data: {
+                            candidate: event.candidate.candidate,
+                            sdpMid: event.candidate.sdpMid,
+                            sdpMLineIndex: event.candidate.sdpMLineIndex
+                        }
+                    }));
+                }
+            };
+
+            pc.oniceconnectionstatechange = () => {
+                console.log(`ICE состояние для ${peerId}:`, pc.iceConnectionState);
+
+                if (pc.iceConnectionState === 'disconnected' ||
+                    pc.iceConnectionState === 'failed' ||
+                    pc.iceConnectionState === 'closed') {
+                    // Удаляем видео при разрыве соединения
+                    setRemoteVideos(prev => prev.filter(p => p.id !== peerId));
+
+                    // Удаляем соединение
+                    if (peerConnectionsRef.current[peerId]) {
+                        peerConnectionsRef.current[peerId].close();
+                        delete peerConnectionsRef.current[peerId];
                     }
-                }));
+                }
+            };
+
+            // Если мы инициатор, создаем и отправляем оффер
+            if (isInitiator) {
+                pc.createOffer()
+                    .then(offer => pc.setLocalDescription(offer))
+                    .then(() => {
+                        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+                            socketRef.current.send(JSON.stringify({
+                                type: 'offer',
+                                to: peerId,
+                                data: {sdp: pc.localDescription.sdp}
+                            }));
+                        } else {
+                            console.error('WebSocket не подключен, невозможно отправить оффер');
+                        }
+                    })
+                    .catch(err => console.error('Ошибка при создании оффера:', err));
             }
-        };
 
-        // Если мы инициатор, создаем и отправляем оффер
-        if (isInitiator) {
-            pc.createOffer()
-                .then(offer => pc.setLocalDescription(offer))
-                .then(() => {
-                    if (socketRef.current) {
-                        socketRef.current.send(JSON.stringify({
-                            type: 'offer',
-                            to: peerId,
-                            data: {sdp: pc.localDescription.sdp}
-                        }));
-                    }
-                })
-                .catch(err => console.error('Ошибка при создании оффера:', err));
+            return pc;
+        } catch (err) {
+            console.error(`Ошибка при создании соединения с ${peerId}:`, err);
+            return null;
         }
-
-        return pc;
     };
 
     // Обработка входящего оффера
     const handleOffer = async (message) => {
         const peerId = message.from;
-
-        // Создаем соединение, если его еще нет
-        let pc = peerConnectionsRef.current[peerId];
-        if (!pc) {
-            pc = createPeerConnection(peerId, false);
-        }
+        console.log(`Получен оффер от ${peerId}`);
 
         try {
+            // Создаем соединение, если его еще нет
+            let pc = peerConnectionsRef.current[peerId];
+            if (!pc) {
+                pc = createPeerConnection(peerId, false);
+                if (!pc) return; // Если не удалось создать соединение
+            }
+
             await pc.setRemoteDescription(new RTCSessionDescription({
                 type: 'offer',
                 sdp: message.data.sdp
@@ -191,12 +210,14 @@ const VideoCall = () => {
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
 
-            if (socketRef.current) {
+            if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
                 socketRef.current.send(JSON.stringify({
                     type: 'answer',
                     to: peerId,
                     data: {sdp: pc.localDescription.sdp}
                 }));
+            } else {
+                console.error('WebSocket не подключен, невозможно отправить ответ');
             }
         } catch (err) {
             console.error('Ошибка при обработке оффера:', err);
@@ -205,7 +226,10 @@ const VideoCall = () => {
 
     // Обработка входящего ответа
     const handleAnswer = async (message) => {
-        const pc = peerConnectionsRef.current[message.from];
+        const peerId = message.from;
+        console.log(`Получен ответ от ${peerId}`);
+
+        const pc = peerConnectionsRef.current[peerId];
         if (pc) {
             try {
                 await pc.setRemoteDescription(new RTCSessionDescription({
@@ -215,12 +239,17 @@ const VideoCall = () => {
             } catch (err) {
                 console.error('Ошибка при обработке ответа:', err);
             }
+        } else {
+            console.error(`Нет соединения для ${peerId}`);
         }
     };
 
     // Обработка ICE кандидатов
     const handleIceCandidate = async (message) => {
-        const pc = peerConnectionsRef.current[message.from];
+        const peerId = message.from;
+        console.log(`Получен ICE кандидат от ${peerId}`);
+
+        const pc = peerConnectionsRef.current[peerId];
         if (pc) {
             try {
                 await pc.addIceCandidate(new RTCIceCandidate({
@@ -231,13 +260,15 @@ const VideoCall = () => {
             } catch (err) {
                 console.error('Ошибка при добавлении ICE кандидата:', err);
             }
+        } else {
+            console.error(`Нет соединения для ${peerId}`);
         }
     };
 
     // Очистка соединений
     const cleanupConnections = () => {
         // Закрываем все peer connections
-        Object.values(peerConnectionsRef.current).forEach(pc => {
+        Object.entries(peerConnectionsRef.current).forEach(([peerId, pc]) => {
             if (pc) {
                 pc.close();
             }
@@ -249,14 +280,19 @@ const VideoCall = () => {
             localStreamRef.current.getTracks().forEach(track => track.stop());
         }
 
-        // Очищаем видео элементы
-        const videoContainer = document.getElementById('remote-videos');
-        if (videoContainer) {
-            videoContainer.innerHTML = '';
-        }
-
-        setPeers({});
+        // Очищаем список видео
+        setRemoteVideos([]);
     };
+
+    // Обновление видео элементов при изменении потоков
+    useEffect(() => {
+        remoteVideos.forEach(peer => {
+            const videoElement = document.getElementById(`video-${peer.id}`);
+            if (videoElement && peer.stream) {
+                videoElement.srcObject = peer.stream;
+            }
+        });
+    }, [remoteVideos]);
 
     // Очистка ресурсов при размонтировании
     useEffect(() => {
@@ -319,14 +355,29 @@ const VideoCall = () => {
                         autoPlay
                         muted
                         playsInline
-                        style={{width: '320px', height: '240px', backgroundColor: '#000'}}
+                        style={{width: '320px', height: '240px', backgroundColor: '#000', borderRadius: '8px'}}
                     />
                 </div>
 
                 <div>
-                    <h3>Участники комнаты</h3>
-                    <div id="remote-videos" style={{display: 'flex', flexWrap: 'wrap', gap: '10px'}}>
-                        {/* Сюда будут динамически добавляться видео других участников */}
+                    <h3>Участники комнаты ({remoteVideos.length})</h3>
+                    <div style={{display: 'flex', flexWrap: 'wrap', gap: '10px'}}>
+                        {remoteVideos.map(peer => (
+                            <div key={peer.id} style={{marginBottom: '10px'}}>
+                                <video
+                                    id={`video-${peer.id}`}
+                                    autoPlay
+                                    playsInline
+                                    style={{
+                                        width: '240px',
+                                        height: '180px',
+                                        backgroundColor: '#000',
+                                        borderRadius: '8px'
+                                    }}
+                                />
+                                <div style={{textAlign: 'center', marginTop: '5px'}}>{peer.id}</div>
+                            </div>
+                        ))}
                     </div>
                 </div>
             </div>
