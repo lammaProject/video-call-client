@@ -12,6 +12,7 @@ const VideoCall = ({ userId, wsUrl }) => {
   const localVideoRef = useRef(null);
   const peerConnections = useRef(new Map());
   const wsRef = useRef(null);
+  const localStreamRef = useRef(null);
 
   const configuration = {
     iceServers: [
@@ -20,8 +21,10 @@ const VideoCall = ({ userId, wsUrl }) => {
     ],
   };
 
-  // Получение локального видео
+  // Получение локального видео - только один раз при монтировании
   useEffect(() => {
+    let mounted = true;
+
     const getLocalVideo = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -29,11 +32,16 @@ const VideoCall = ({ userId, wsUrl }) => {
           audio: true,
         });
 
-        setLocalStream(stream);
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
+        if (mounted) {
+          localStreamRef.current = stream;
+          setLocalStream(stream);
+
+          if (localVideoRef.current) {
+            localVideoRef.current.srcObject = stream;
+          }
+
+          setIsReady(true);
         }
-        setIsReady(true);
       } catch (error) {
         console.error("Error accessing media devices:", error);
       }
@@ -42,15 +50,25 @@ const VideoCall = ({ userId, wsUrl }) => {
     getLocalVideo();
 
     return () => {
-      if (localStream) {
-        localStream.getTracks().forEach((track) => track.stop());
+      mounted = false;
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((track) => {
+          track.stop();
+        });
       }
     };
-  }, []);
+  }, []); // Пустой массив зависимостей - выполняется только один раз
+
+  // Обновляем видео элемент когда получаем поток
+  useEffect(() => {
+    if (localVideoRef.current && localStream) {
+      localVideoRef.current.srcObject = localStream;
+    }
+  }, [localStream]);
 
   // Инициализация WebSocket только после получения локального видео
   useEffect(() => {
-    if (!isReady || !localStream) return;
+    if (!isReady || !localStreamRef.current) return;
 
     const websocket = new WebSocket(`${wsUrl}?id=${userId}`);
     wsRef.current = websocket;
@@ -116,9 +134,8 @@ const VideoCall = ({ userId, wsUrl }) => {
 
     return () => {
       websocket.close();
-      cleanup();
     };
-  }, [isReady, localStream, userId, wsUrl]);
+  }, [isReady, userId, wsUrl]); // Убрали localStream из зависимостей
 
   const createPeerConnection = useCallback(
     async (remoteUserId, createOffer = false) => {
@@ -135,12 +152,12 @@ const VideoCall = ({ userId, wsUrl }) => {
       peerConnections.current.set(remoteUserId, pc);
 
       // Добавляем локальные треки
-      if (localStream) {
-        localStream.getTracks().forEach((track) => {
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((track) => {
           console.log(
             `Adding ${track.kind} track to peer connection for ${remoteUserId}`,
           );
-          pc.addTrack(track, localStream);
+          pc.addTrack(track, localStreamRef.current);
         });
       }
 
@@ -219,8 +236,8 @@ const VideoCall = ({ userId, wsUrl }) => {
 
       return pc;
     },
-    [localStream, userId],
-  );
+    [userId],
+  ); // Убрали localStream из зависимостей, используем ref
 
   const handleVideoChatMessage = async (data) => {
     console.log("Handling video chat message:", data);
@@ -313,11 +330,6 @@ const VideoCall = ({ userId, wsUrl }) => {
   };
 
   const cleanup = () => {
-    // Останавливаем локальный поток
-    if (localStream) {
-      localStream.getTracks().forEach((track) => track.stop());
-    }
-
     // Закрываем все peer connections
     peerConnections.current.forEach((pc) => pc.close());
     peerConnections.current.clear();
