@@ -2,7 +2,7 @@ import VideoCall from "./components/VideoCall.tsx";
 
 const App = () => {
   const userId = `user_${Math.random().toString(36).substr(2, 9)}`;
-  const wsUrl = "ws://192.168.0.18:8080/ws";
+  const wsUrl = "wss://video-chat-server-production.up.railway.app/ws";
   return (
     <main className={"bg-[#0C0032] h-full flex flex-col"}>
       <VideoCall userId={userId} wsUrl={wsUrl} />
