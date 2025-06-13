@@ -18,6 +18,9 @@ const VideoCall = () => {
   const [textMessage, setTextMessage] = useState("");
   const [isVideoChat, setIsVideoChat] = useState(false);
   const [chatClients, setChatClients] = useState<Array<string>>([]);
+  const [videoClients, setVideoClients] = useState<{
+    [key: string]: MediaStream;
+  }>({});
 
   const localStreamRef = useRef<HTMLVideoElement>(null);
   const socketRef = useRef<WebSocket | null>(null);
@@ -30,7 +33,7 @@ const VideoCall = () => {
         try {
           // Инициализируем соединение при подключении
           socketRef.current = new WebSocket(
-            "wss://video-chat-server-production.up.railway.app/ws?id=" + userId,
+            "ws://192.168.0.18:8080/ws?id=" + userId,
           );
 
           socketRef.current.onopen = () => {
@@ -39,7 +42,6 @@ const VideoCall = () => {
 
           socketRef.current.onmessage = async (event) => {
             const data: AnswerType = JSON.parse(event.data);
-            console.log(data);
             if (data.type === "register") {
               const clients = Object.keys(data.clients);
               setChatClients(clients);
@@ -48,6 +50,49 @@ const VideoCall = () => {
 
             if (data.type === "chat") {
               setChatMessages(data.messages);
+            }
+
+            if (data.type === "videochat") {
+              const peerData: any = data?.data;
+              console.log(peerData);
+              if (!peerRef.current) {
+                console.error(
+                  "Получено видео-сообщение, но соединение не инициализировано",
+                );
+                return;
+              }
+
+              if (peerData.offer) {
+                peerRef.current
+                  .setRemoteDescription(
+                    new RTCSessionDescription(peerData.offer),
+                  )
+                  .then(() => peerRef.current!.createAnswer())
+                  .then((answer) =>
+                    peerRef.current!.setLocalDescription(answer),
+                  )
+                  .then(() => {
+                    socketRef.current?.send(
+                      JSON.stringify({
+                        type: "videochat",
+                        answer: peerRef.current!.localDescription,
+                        userId: userId,
+                      }),
+                    );
+                  });
+              }
+
+              if (peerData.answer) {
+                peerRef.current.setRemoteDescription(
+                  new RTCSessionDescription(peerData.answer),
+                );
+              }
+
+              if (peerData.iceCandidate) {
+                peerRef.current.addIceCandidate(
+                  new RTCIceCandidate(peerData.iceCandidate),
+                );
+              }
             }
           };
         } catch (error) {
@@ -63,12 +108,17 @@ const VideoCall = () => {
         socketRef.current.close();
       }
     };
-  }, [connection, peerRef]);
+  }, [connection]);
 
   const sendMessage = () => {
     if (!textMessage.trim() || !socketRef.current) return;
     socketRef.current.send(
-      JSON.stringify({ to: "chat", text: textMessage, from: userId }),
+      JSON.stringify({
+        type: "chat",
+        to: "chat",
+        text: textMessage,
+        from: userId,
+      }),
     );
     setTextMessage("");
   };
@@ -105,6 +155,19 @@ const VideoCall = () => {
     if (socketRef.current) {
       const peerConnection = new RTCPeerConnection(configuration);
       peerRef.current = peerConnection;
+
+      stream.getTracks().forEach((track) => {
+        peerConnection.addTrack(track, stream);
+      });
+
+      peerConnection.ontrack = (event) => {
+        const remoteStream = event.streams[0];
+        const streamId = Date.now() + Math.random().toString(36).substring(7);
+        setVideoClients((prev) => ({
+          ...prev,
+          [streamId]: remoteStream,
+        }));
+      };
       peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
           socketRef.current?.send(
@@ -157,6 +220,23 @@ const VideoCall = () => {
           </ul>
 
           <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
+            {Object.entries(videoClients).map(([clientId, stream]) => (
+              <div key={clientId} style={{ margin: "10px" }}>
+                <video
+                  autoPlay
+                  playsInline
+                  width={400}
+                  height={300}
+                  ref={(el) => {
+                    if (el && el.srcObject !== stream) {
+                      el.srcObject = stream;
+                    }
+                  }}
+                  poster={image}
+                />
+                <p>ID: {clientId}</p>
+              </div>
+            ))}
             {/*{connectedUsers.map((id) => (*/}
             {/*  <div key={id}>*/}
             {/*    <video*/}

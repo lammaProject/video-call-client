@@ -1,7 +1,8 @@
 export interface AnswerType {
-  type: "chat" | "register" | "videoChat";
+  type: "chat" | "register" | "videochat";
   clients: Record<string, boolean>;
   messages: Message[];
+  data?: Record<string, boolean>;
 }
 
 type Message = {
