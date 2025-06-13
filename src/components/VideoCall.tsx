@@ -20,7 +20,6 @@ const VideoCall = () => {
   const [chatClients, setChatClients] = useState<Array<string>>([]);
 
   const localStreamRef = useRef<HTMLVideoElement>(null);
-  const remoteVideosRef = useRef<{ [key: string]: HTMLVideoElement }>({});
   const socketRef = useRef<WebSocket | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
 
