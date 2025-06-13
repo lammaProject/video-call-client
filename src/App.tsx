@@ -2,7 +2,7 @@ import './App.css';
 import VideoCall from "./components/VideoCall.tsx";
 
 const App = () => {
-    return <VideoCall/>
+    return <div><VideoCall/></div>
 }
 
 export default App;

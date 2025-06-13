@@ -1,15 +1,20 @@
 .App {
-  text-align: center;
+    text-align: center;
 }
 
 .App-header {
-  background-color: #282c34;
-  padding: 20px;
-  color: white;
-  min-height: 100vh;
+    background-color: #282c34;
+    padding: 20px;
+    color: white;
+    min-height: 100vh;
 }
 
 .video-container {
-  display: flex;
-  justify-content: center;
-  gap: 20px;
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+}
+
+#root {
+    width: 100%
+}
