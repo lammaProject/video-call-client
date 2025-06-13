@@ -12,6 +12,8 @@ interface Props {
   localStream: MediaStream | null;
   localStreamRef: RefObject<MediaStream | null>;
   configurationPeer: { iceServers: { urls: string }[] };
+  connection: boolean;
+  setConnection: (connection: boolean) => void;
 }
 
 const useWebsocketPeerConnection = ({
@@ -20,6 +22,7 @@ const useWebsocketPeerConnection = ({
   localStream,
   localStreamRef,
   configurationPeer,
+  connection,
 }: Props) => {
   const [remoteStreams, setRemoteStreams] = useState(new Map());
   const [connectedUsers, setConnectedUsers] = useState(new Set());
@@ -28,7 +31,7 @@ const useWebsocketPeerConnection = ({
   const wsRef = useRef<WebSocket>(null);
 
   useEffect(() => {
-    if (!localStream && !localStreamRef.current) return;
+    if ((!localStream && !localStreamRef.current) || !connection) return;
 
     const websocket = new WebSocket(`${wsUrl}?id=${userId}`);
     wsRef.current = websocket;
@@ -85,7 +88,7 @@ const useWebsocketPeerConnection = ({
     return () => {
       websocket.close();
     };
-  }, [localStream]);
+  }, [localStream, connection]);
 
   const createPeerConnection = useCallback(
     async (remoteUserId: string, createOffer = false) => {
@@ -170,10 +173,7 @@ const useWebsocketPeerConnection = ({
             wsRef.current.send(
               JSON.stringify({
                 type: "videochat",
-                offer: {
-                  type: offer.type,
-                  sdp: offer.sdp,
-                },
+                offer,
                 to: remoteUserId,
                 from: userId,
               }),
@@ -283,7 +283,14 @@ const useWebsocketPeerConnection = ({
     }
   };
 
-  return { connectedUsers, remoteStreams };
+  const disconnect = () => {
+    if (wsRef.current) {
+      wsRef.current.close();
+      cleanup();
+    }
+  };
+
+  return { connectedUsers, remoteStreams, disconnect, wsRef };
 };
 
 export { useWebsocketPeerConnection };

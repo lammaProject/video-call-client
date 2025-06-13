@@ -1,5 +1,6 @@
 import { useLocaleVideo } from "./hooks/useLocaleVideo.ts";
 import { useWebsocketPeerConnection } from "./hooks/useWebsocketPeerConnection.ts";
+import { useState } from "react";
 
 interface VideoCallProps {
   userId: string;
@@ -14,36 +15,65 @@ const configuration = {
 };
 
 const VideoCall = ({ userId, wsUrl }: VideoCallProps) => {
-  const { localStream, localStreamRef, localVideoRef } = useLocaleVideo();
-  const { remoteStreams, connectedUsers } = useWebsocketPeerConnection({
-    wsUrl,
-    userId,
-    configurationPeer: configuration,
-    localStreamRef,
-    localStream,
+  const [connection, setConnection] = useState(false);
+
+  const { localStream, localStreamRef, localVideoRef } = useLocaleVideo({
+    connection,
   });
 
-  if (!localStreamRef.current) {
-    return (
-      <div>
-        <div style={{ color: "white" }}>Initializing camera...</div>
-      </div>
-    );
-  }
+  const { remoteStreams, connectedUsers, disconnect, wsRef } =
+    useWebsocketPeerConnection({
+      wsUrl,
+      userId,
+      configurationPeer: configuration,
+      localStreamRef,
+      localStream,
+      connection,
+      setConnection,
+    });
+
+  // const { messages } = useChat({ connection });
+
+  const handleConnection = () => {
+    setConnection(true);
+  };
+
+  const handleDisconnect = () => {
+    disconnect();
+    setConnection(false);
+  };
 
   return (
-    <div>
-      <div>Connected users: {connectedUsers.size + 1}</div>
-
-      {/* Локальное видео */}
-      <div>
-        <div>
-          <span>You ({userId})</span>
-          <video ref={localVideoRef} autoPlay playsInline muted />
+    <div className={"flex justify-center items-center flex-col h-full"}>
+      {localStreamRef.current && wsRef?.current?.readyState !== 3 && (
+        <div className={"bg-white p-[10px] mb-4"}>
+          Connected users: {connectedUsers.size + 1}
         </div>
-      </div>
+      )}
+      <button
+        className={"mb-4"}
+        onClick={connection ? handleDisconnect : handleConnection}
+      >
+        {connection ? "Отключиться от чата" : "Подключиться к чату"}
+      </button>
+      {connection && (
+        <div className={"text-white flex flex-col "}>
+          <span className={"mb-2 text-[10px]"}>You ({userId})</span>
+          {localStreamRef.current && wsRef?.current?.readyState !== 3 ? (
+            <video
+              width={200}
+              height={200}
+              ref={localVideoRef}
+              autoPlay
+              playsInline
+              muted
+            />
+          ) : (
+            <span>loading...</span>
+          )}
+        </div>
+      )}
 
-      {/* Удаленные видео */}
       {Array.from(remoteStreams.entries()).map(([remoteUserId, stream]) => (
         <div key={remoteUserId}>
           <div>

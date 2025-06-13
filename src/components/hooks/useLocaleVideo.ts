@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 
-const useLocaleVideo = () => {
+interface Props {
+  connection: boolean;
+}
+
+const useLocaleVideo = ({ connection }: Props) => {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const localStreamRef = useRef<MediaStream>(null);
 
   useEffect(() => {
+    if (!connection) return;
+
     let mounted = true;
 
     const getLocalVideo = async () => {
@@ -35,7 +41,7 @@ const useLocaleVideo = () => {
         });
       }
     };
-  }, []);
+  }, [connection]);
 
   useEffect(() => {
     if (localVideoRef.current && localStream) {
