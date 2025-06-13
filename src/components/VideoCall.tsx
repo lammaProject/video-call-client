@@ -33,7 +33,7 @@ const VideoCall = () => {
         try {
           // Инициализируем соединение при подключении
           socketRef.current = new WebSocket(
-            "ws://video-chat-server-production.up.railway.app/ws?id=" + userId, // Убрали "4" перед userId
+            "wss://video-chat-server-production.up.railway.app/ws?id=" + userId, // Убрали "4" перед userId
           );
 
           socketRef.current.onopen = () => {
