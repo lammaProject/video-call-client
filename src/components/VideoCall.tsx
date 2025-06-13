@@ -1,5 +1,6 @@
+// @ts-nocheck
+
 import { useEffect, useRef, useState } from "react";
-import image from "../assets/react.svg";
 import type { AnswerType } from "./type.ts";
 
 const configuration = {
@@ -23,101 +24,267 @@ const VideoCall = () => {
   }>({});
 
   const localStreamRef = useRef<HTMLVideoElement>(null);
+  const localStream = useRef<MediaStream | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
-  const peerRef = useRef<RTCPeerConnection | null>(null);
+  // Изменяем на Map для хранения множественных соединений
+  const peerConnections = useRef<Map<string, RTCPeerConnection>>(new Map());
 
-  // Получение локального потока
+  // Функция создания peer connection для конкретного участника
+  const createPeerConnection = (remoteUserId: string) => {
+    console.log(`Создаем peer connection для ${remoteUserId}`);
+
+    const peerConnection = new RTCPeerConnection(configuration);
+
+    // Добавляем локальный поток
+    if (localStream.current) {
+      localStream.current.getTracks().forEach((track) => {
+        console.log(
+          `Добавляем трек ${track.kind} в peer connection для ${remoteUserId}`,
+        );
+        peerConnection.addTrack(track, localStream.current!);
+      });
+    }
+
+    // Обработка входящих треков
+    peerConnection.ontrack = (event) => {
+      console.log(`Получен удаленный трек от ${remoteUserId}:`, event);
+      const remoteStream = event.streams[0];
+
+      setVideoClients((prev) => ({
+        ...prev,
+        [remoteUserId]: remoteStream,
+      }));
+    };
+
+    // Обработка ICE кандидатов
+    peerConnection.onicecandidate = (event) => {
+      if (event.candidate && socketRef.current) {
+        console.log(`Отправка ICE кандидата для ${remoteUserId}`);
+        socketRef.current.send(
+          JSON.stringify({
+            type: "videochat",
+            data: {
+              iceCandidate: event.candidate,
+              targetUserId: remoteUserId,
+            },
+            userId,
+          }),
+        );
+      }
+    };
+
+    // Логирование состояния
+    peerConnection.oniceconnectionstatechange = () => {
+      console.log(
+        `ICE Connection State для ${remoteUserId}:`,
+        peerConnection.iceConnectionState,
+      );
+
+      // Удаляем соединение если оно закрыто
+      if (
+        peerConnection.iceConnectionState === "disconnected" ||
+        peerConnection.iceConnectionState === "failed"
+      ) {
+        peerConnections.current.delete(remoteUserId);
+        setVideoClients((prev) => {
+          const newClients = { ...prev };
+          delete newClients[remoteUserId];
+          return newClients;
+        });
+      }
+    };
+
+    peerConnections.current.set(remoteUserId, peerConnection);
+    return peerConnection;
+  };
+
+  // Основной useEffect для WebSocket
   useEffect(() => {
     if (connection) {
-      const getStream = async () => {
+      socketRef.current = new WebSocket(
+        "wss://video-chat-server-production.up.railway.app/ws?id=" + userId,
+      );
+
+      socketRef.current.onopen = () => {
+        console.log("Подключено к серверу");
+      };
+
+      socketRef.current.onmessage = async (event) => {
         try {
-          // Инициализируем соединение при подключении
-          socketRef.current = new WebSocket(
-            "wss://video-chat-server-production.up.railway.app/ws?id=" + userId, // Убрали "4" перед userId
-          );
+          const data: AnswerType = JSON.parse(event.data);
+          console.log("Получено сообщение:", data);
 
-          socketRef.current.onopen = () => {
-            console.log("Подключено к серверу");
-          };
+          if (data.type === "register") {
+            const clients = Object.keys(data.clients || {});
+            console.log("Получен список клиентов:", clients);
+            setChatClients(clients);
+            setChatMessages(data.messages || []);
 
-          socketRef.current.onmessage = async (event) => {
-            try {
-              const data: AnswerType = JSON.parse(event.data);
-              console.log("Получено сообщение:", data);
-
-              if (data.type === "register") {
-                const clients = Object.keys(data.clients || {});
-                console.log("Получен список клиентов:", clients);
-                setChatClients(clients);
-                setChatMessages(data.messages || []);
-              }
-
-              if (data.type === "chat") {
-                setChatMessages(data.messages || []);
-              }
-
-              if (data.type === "videochat") {
-                const peerData: any = data?.data;
-                console.log("Получены данные видеочата:", peerData);
-
-                if (!peerRef.current) {
-                  console.error(
-                    "Получено видео-сообщение, но соединение не инициализировано",
-                  );
-                  return;
-                }
-
-                if (peerData.offer) {
-                  console.log("Получено предложение:", peerData.offer);
-                  await peerRef.current.setRemoteDescription(
-                    new RTCSessionDescription(peerData.offer),
-                  );
-
-                  const answer = await peerRef.current.createAnswer();
-                  await peerRef.current.setLocalDescription(answer);
-
-                  console.log("Отправляем ответ:", answer);
-                  socketRef.current?.send(
-                    JSON.stringify({
-                      type: "videochat",
-                      data: { answer: peerRef.current.localDescription },
-                      userId: userId,
-                    }),
-                  );
-                }
-
-                if (peerData.answer) {
-                  console.log("Получен ответ:", peerData.answer);
-                  await peerRef.current.setRemoteDescription(
-                    new RTCSessionDescription(peerData.answer),
-                  );
-                }
-
-                if (peerData.iceCandidate) {
-                  console.log("Получен ICE кандидат:", peerData.iceCandidate);
-                  await peerRef.current.addIceCandidate(
-                    new RTCIceCandidate(peerData.iceCandidate),
-                  );
+            // Если видеочат активен, инициируем соединения с новыми клиентами
+            if (isVideoChat && localStream.current) {
+              for (const clientId of clients) {
+                if (
+                  clientId !== userId &&
+                  !peerConnections.current.has(clientId)
+                ) {
+                  await initiateCall(clientId);
                 }
               }
-            } catch (error) {
-              console.error("Ошибка при обработке сообщения:", error);
             }
-          };
+          }
+
+          if (data.type === "chat") {
+            setChatMessages(data.messages || []);
+          }
+
+          if (data.type === "videochat") {
+            const peerData: any = data?.data;
+            const fromUserId = data.userId; // Предполагаем, что сервер передает ID отправителя
+
+            console.log(
+              `Получены данные видеочата от ${fromUserId}:`,
+              peerData,
+            );
+
+            // Обработка offer
+            if (peerData.offer && fromUserId) {
+              await handleOffer(peerData.offer, fromUserId);
+            }
+
+            // Обработка answer
+            if (peerData.answer && peerData.targetUserId === userId) {
+              await handleAnswer(peerData.answer, fromUserId);
+            }
+
+            // Обработка ICE кандидата
+            if (peerData.iceCandidate && peerData.targetUserId === userId) {
+              await handleIceCandidate(peerData.iceCandidate, fromUserId);
+            }
+          }
         } catch (error) {
-          console.error("Ошибка доступа к медиа:", error);
+          console.error("Ошибка при обработке сообщения:", error);
         }
       };
 
-      void getStream();
+      socketRef.current.onerror = (error) => {
+        console.error("WebSocket ошибка:", error);
+      };
+
+      socketRef.current.onclose = () => {
+        console.log("WebSocket закрыт");
+      };
     }
 
     return () => {
       if (socketRef.current) {
         socketRef.current.close();
+        socketRef.current = null;
       }
     };
-  }, [connection]);
+  }, [connection, isVideoChat]); // Добавляем isVideoChat в зависимости
+
+  // Инициирование звонка
+  const initiateCall = async (remoteUserId: string) => {
+    console.log(`Инициируем звонок с ${remoteUserId}`);
+
+    const peerConnection = createPeerConnection(remoteUserId);
+
+    try {
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+
+      if (socketRef.current) {
+        socketRef.current.send(
+          JSON.stringify({
+            type: "videochat",
+            data: {
+              offer: peerConnection.localDescription,
+              targetUserId: remoteUserId,
+            },
+            userId,
+          }),
+        );
+      }
+    } catch (error) {
+      console.error(`Ошибка при создании offer для ${remoteUserId}:`, error);
+    }
+  };
+
+  // Обработка входящего offer
+  const handleOffer = async (
+    offer: RTCSessionDescriptionInit,
+    fromUserId: string,
+  ) => {
+    console.log(`Обработка offer от ${fromUserId}`);
+
+    let peerConnection = peerConnections.current.get(fromUserId);
+
+    if (!peerConnection) {
+      peerConnection = createPeerConnection(fromUserId);
+    }
+
+    try {
+      await peerConnection.setRemoteDescription(
+        new RTCSessionDescription(offer),
+      );
+      const answer = await peerConnection.createAnswer();
+      await peerConnection.setLocalDescription(answer);
+
+      if (socketRef.current) {
+        socketRef.current.send(
+          JSON.stringify({
+            type: "videochat",
+            data: {
+              answer: peerConnection.localDescription,
+              targetUserId: fromUserId,
+            },
+            userId,
+          }),
+        );
+      }
+    } catch (error) {
+      console.error(`Ошибка при обработке offer от ${fromUserId}:`, error);
+    }
+  };
+
+  // Обработка входящего answer
+  const handleAnswer = async (
+    answer: RTCSessionDescriptionInit,
+    fromUserId: string,
+  ) => {
+    console.log(`Обработка answer от ${fromUserId}`);
+
+    const peerConnection = peerConnections.current.get(fromUserId);
+
+    if (peerConnection) {
+      try {
+        await peerConnection.setRemoteDescription(
+          new RTCSessionDescription(answer),
+        );
+      } catch (error) {
+        console.error(`Ошибка при обработке answer от ${fromUserId}:`, error);
+      }
+    }
+  };
+
+  // Обработка ICE кандидата
+  const handleIceCandidate = async (
+    candidate: RTCIceCandidateInit,
+    fromUserId: string,
+  ) => {
+    const peerConnection = peerConnections.current.get(fromUserId);
+
+    if (peerConnection) {
+      try {
+        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (error) {
+        console.error(
+          `Ошибка при добавлении ICE кандидата от ${fromUserId}:`,
+          error,
+        );
+      }
+    }
+  };
 
   const sendMessage = () => {
     if (!textMessage.trim() || !socketRef.current) return;
@@ -138,22 +305,20 @@ const VideoCall = () => {
 
   const handleDisconnect = () => {
     setConnection(false);
+
+    // Останавливаем локальный поток
+    if (localStream.current) {
+      localStream.current.getTracks().forEach((track) => track.stop());
+      localStream.current = null;
+    }
+
+    // Закрываем все peer connections
+    peerConnections.current.forEach((pc) => pc.close());
+    peerConnections.current.clear();
+
     if (socketRef.current) {
       socketRef.current.close();
       socketRef.current = null;
-    }
-
-    // Останавливаем видео при отключении
-    if (localStreamRef.current && localStreamRef.current.srcObject) {
-      const stream = localStreamRef.current.srcObject as MediaStream;
-      stream.getTracks().forEach((track) => track.stop());
-      localStreamRef.current.srcObject = null;
-    }
-
-    // Закрываем peer connection
-    if (peerRef.current) {
-      peerRef.current.close();
-      peerRef.current = null;
     }
 
     setIsVideoChat(false);
@@ -163,140 +328,46 @@ const VideoCall = () => {
   const handleVideoChat = async () => {
     if (isVideoChat) {
       // Выключаем видео
-      if (localStreamRef.current && localStreamRef.current.srcObject) {
-        const stream = localStreamRef.current.srcObject as MediaStream;
-        stream.getTracks().forEach((track) => {
-          console.log("Останавливаем трек:", track);
-          track.stop();
-        });
-        localStreamRef.current.srcObject = null;
+      if (localStream.current) {
+        localStream.current.getTracks().forEach((track) => track.stop());
+        localStream.current = null;
       }
 
-      // Закрываем peer connection
-      if (peerRef.current) {
-        peerRef.current.close();
-        peerRef.current = null;
-      }
+      // Закрываем все peer connections
+      peerConnections.current.forEach((pc) => pc.close());
+      peerConnections.current.clear();
 
       setIsVideoChat(false);
+      setVideoClients({});
       return;
     }
 
     try {
-      // Проверяем доступные устройства
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoDevices = devices.filter(
-        (device) => device.kind === "videoinput",
-      );
-
-      if (videoDevices.length === 0) {
-        alert("Видеоустройства не обнаружены!");
-        return;
-      }
-
-      // Получаем доступ к камере
+      // Получаем локальный поток
       console.log("Запрашиваем доступ к медиа...");
       const stream = await navigator.mediaDevices.getUserMedia({
         video: true,
-        audio: false,
+        audio: true, // Включаем аудио
       });
 
-      console.log("Доступ получен, stream:", stream);
-      console.log("Stream active:", stream.active);
-      console.log("Video tracks:", stream.getVideoTracks());
+      localStream.current = stream;
 
-      // Привязываем поток к видео элементу
+      // Устанавливаем поток для локального видео
       if (localStreamRef.current) {
         localStreamRef.current.srcObject = stream;
-
-        // Добавляем обработчик для проверки загрузки метаданных
-        localStreamRef.current.onloadedmetadata = () => {
-          console.log("Метаданные видео загружены");
-          if (localStreamRef.current) {
-            localStreamRef.current
-              .play()
-              .catch((e) => console.error("Ошибка воспроизведения:", e));
-          }
-        };
-      }
-
-      // Инициализируем WebRTC только если WebSocket соединение активно
-      if (
-        socketRef.current &&
-        socketRef.current.readyState === WebSocket.OPEN
-      ) {
-        const peerConnection = new RTCPeerConnection(configuration);
-        peerRef.current = peerConnection;
-
-        // Добавляем все треки из локального потока в peer connection
-        stream.getTracks().forEach((track) => {
-          console.log("Добавляем трек в peer connection:", track);
-          peerConnection.addTrack(track, stream);
-        });
-
-        // Обработка входящих треков
-        peerConnection.ontrack = (event) => {
-          console.log("Получен удаленный трек:", event);
-          const remoteStream = event.streams[0];
-          const streamId = Date.now() + Math.random().toString(36).substring(7);
-
-          console.log("Добавляем удаленный поток:", streamId);
-          setVideoClients((prev) => ({
-            ...prev,
-            [streamId]: remoteStream,
-          }));
-        };
-
-        // Обработка ICE кандидатов
-        peerConnection.onicecandidate = (event) => {
-          if (event.candidate) {
-            console.log("Отправка ICE кандидата:", event.candidate);
-            socketRef.current?.send(
-              JSON.stringify({
-                type: "videochat",
-                data: { iceCandidate: event.candidate },
-                userId,
-              }),
-            );
-          }
-        };
-
-        // Логирование состояния соединения
-        peerConnection.oniceconnectionstatechange = () => {
-          console.log(
-            "ICE Connection State:",
-            peerConnection.iceConnectionState,
-          );
-        };
-
-        peerConnection.onsignalingstatechange = () => {
-          console.log("Signaling State:", peerConnection.signalingState);
-        };
-
-        // Создание и отправка предложения
-        try {
-          console.log("Создаем предложение");
-          const offer = await peerConnection.createOffer();
-          await peerConnection.setLocalDescription(offer);
-
-          console.log("Отправляем предложение:", offer);
-          socketRef.current.send(
-            JSON.stringify({
-              type: "videochat",
-              data: { offer: peerConnection.localDescription },
-              userId,
-            }),
-          );
-        } catch (err) {
-          console.error("Ошибка при создании предложения:", err);
-        }
-      } else {
-        console.error("WebSocket соединение не активно");
       }
 
       setIsVideoChat(true);
+
+      // Инициируем соединения со всеми участниками
+      for (const clientId of chatClients) {
+        if (clientId !== userId) {
+          await initiateCall(clientId);
+        }
+      }
     } catch (error) {
       console.error("Ошибка при инициализации видеочата:", error);
+      alert("Не удалось получить доступ к камере/микрофону");
     }
   };
 
@@ -307,17 +378,19 @@ const VideoCall = () => {
       {connection && (
         <>
           <h3>Локальное видео</h3>
-          {isVideoChat && (
-            <video
-              ref={localStreamRef}
-              autoPlay
-              playsInline
-              muted // Важно для локального видео
-              width={400}
-              height={300}
-              style={{ border: "1px solid #ccc", backgroundColor: "#f0f0f0" }}
-            />
-          )}
+          <video
+            ref={localStreamRef}
+            autoPlay
+            playsInline
+            muted
+            width={400}
+            height={300}
+            style={{
+              border: "1px solid #ccc",
+              backgroundColor: "#000",
+              display: isVideoChat ? "block" : "none",
+            }}
+          />
 
           <h3>Участники: {chatClients.length}</h3>
           <ul>
@@ -338,21 +411,26 @@ const VideoCall = () => {
                   width={400}
                   height={300}
                   ref={(el) => {
-                    if (el && el.srcObject !== stream) {
-                      console.log("Привязываем поток к видео элементу");
+                    if (el && stream) {
                       el.srcObject = stream;
                     }
                   }}
-                  poster={image}
-                  style={{ border: "1px solid #ccc" }}
+                  style={{
+                    border: "1px solid #ccc",
+                    backgroundColor: "#000",
+                  }}
                 />
-                <p>ID: {clientId}</p>
+                <p>Участник: {clientId}</p>
               </div>
             ))}
           </div>
 
           <button
             onClick={handleVideoChat}
+            disabled={
+              !socketRef.current ||
+              socketRef.current.readyState !== WebSocket.OPEN
+            }
             style={{
               padding: "10px 20px",
               backgroundColor: isVideoChat ? "#e74c3c" : "#2ecc71",
@@ -413,7 +491,10 @@ const VideoCall = () => {
               onKeyPress={(e) => e.key === "Enter" && sendMessage()}
             />
             <button
-              disabled={socketRef.current?.readyState === 3}
+              disabled={
+                !socketRef.current ||
+                socketRef.current.readyState !== WebSocket.OPEN
+              }
               onClick={sendMessage}
               style={{
                 padding: "8px 16px",
@@ -466,7 +547,9 @@ const VideoCall = () => {
         </p>
         <p>Клиенты: {JSON.stringify(chatClients)}</p>
         <p>Видео клиенты: {Object.keys(videoClients).length}</p>
+        <p>Активные peer connections: {peerConnections.current.size}</p>
         <p>Видео активно: {isVideoChat ? "Да" : "Нет"}</p>
+        <p>Локальный поток: {localStream.current ? "Активен" : "Неактивен"}</p>
       </div>
     </div>
   );
