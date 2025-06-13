@@ -39,7 +39,7 @@ const VideoCall = () => {
           socketRef.current = new WebSocket(
             `wss://video-chat-server-production.up.railway.app/ws?id=${userId}`,
           );
-
+          console.log("test");
           socketRef.current.onopen = () => {
             console.log("Подключено к серверу");
           };
