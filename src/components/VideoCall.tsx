@@ -1,5 +1,3 @@
-// @ts-nocheck
-
 import { useEffect, useRef, useState } from "react";
 import image from "../assets/react.svg";
 import type { AnswerType } from "./type.ts";
@@ -27,7 +25,7 @@ const VideoCall = () => {
 
   const localStreamRef = useRef<HTMLVideoElement>(null);
   const socketRef = useRef<WebSocket | null>(null);
-  const peerRef = useRef<RTCPeerConnection | null>(null);
+  // Храним peer connections для каждого пользователя
   const peerConnectionsRef = useRef<{ [key: string]: RTCPeerConnection }>({});
 
   // Получение локального потока и подключение к серверу
@@ -37,9 +35,9 @@ const VideoCall = () => {
         try {
           // Инициализируем соединение при подключении
           socketRef.current = new WebSocket(
-            `wss://video-chat-server-production.up.railway.app/ws?id=${userId}`,
+            `ws://192.168.0.18:8080/ws?id=${userId}`,
           );
-          console.log("test");
+
           socketRef.current.onopen = () => {
             console.log("Подключено к серверу");
           };
@@ -50,69 +48,100 @@ const VideoCall = () => {
               console.log("Получено сообщение:", data);
 
               if (data.type === "register") {
-                const clients = Object.keys(data.clients);
+                const clients = Object.keys(data.clients || {});
                 setChatClients(clients);
-                setChatMessages(data.messages);
+                setChatMessages(data.messages || []);
               }
 
               if (data.type === "chat") {
-                setChatMessages(data.messages);
+                setChatMessages(data.messages || []);
               }
 
               if (data.type === "videochat") {
                 const peerData = data?.data || {};
-                console.log("Получены данные видеочата:", peerData);
+                const remoteUserId = data?.userId;
 
-                if (!peerRef.current && isVideoChat && localStream) {
-                  // Если мы получили видео-сообщение, но соединение не инициализировано
-                  console.log("Создаем новое соединение для входящего видео");
-                  const newPeerConnection = createPeerConnection(localStream);
-                  peerRef.current = newPeerConnection;
-                }
-
-                if (!peerRef.current) {
-                  console.error(
-                    "Получено видео-сообщение, но соединение не инициализировано",
-                  );
+                if (!remoteUserId) {
+                  console.error("Получено видео-сообщение без userId");
                   return;
                 }
 
+                console.log(
+                  `Получены данные видеочата от ${remoteUserId}:`,
+                  peerData,
+                );
+
+                // Обрабатываем сообщение только если у нас включено видео
+                if (!isVideoChat || !localStream) {
+                  console.log("Видео не активно, игнорируем сообщение");
+                  return;
+                }
+
+                // Создаем peer connection для этого пользователя, если еще не создано
+                if (!peerConnectionsRef.current[remoteUserId]) {
+                  console.log(`Создаем новое соединение для ${remoteUserId}`);
+                  peerConnectionsRef.current[remoteUserId] =
+                    createPeerConnection(localStream, remoteUserId);
+                }
+
+                const peerConnection = peerConnectionsRef.current[remoteUserId];
+
                 try {
+                  // Обрабатываем offer
                   if (peerData.offer) {
-                    console.log("Получено предложение:", peerData.offer);
-                    await peerRef.current.setRemoteDescription(
+                    console.log(
+                      `Получено предложение от ${remoteUserId}:`,
+                      peerData.offer,
+                    );
+
+                    await peerConnection.setRemoteDescription(
                       new RTCSessionDescription(peerData.offer),
                     );
 
-                    const answer = await peerRef.current.createAnswer();
-                    await peerRef.current.setLocalDescription(answer);
+                    const answer = await peerConnection.createAnswer();
+                    await peerConnection.setLocalDescription(answer);
 
-                    console.log("Отправляем ответ:", answer);
+                    console.log(
+                      `Отправляем ответ для ${remoteUserId}:`,
+                      answer,
+                    );
                     socketRef.current?.send(
                       JSON.stringify({
                         type: "videochat",
-                        data: { answer: peerRef.current.localDescription },
+                        data: { answer: peerConnection.localDescription },
                         userId: userId,
                       }),
                     );
                   }
 
+                  // Обрабатываем answer
                   if (peerData.answer) {
-                    console.log("Получен ответ:", peerData.answer);
-                    await peerRef.current.setRemoteDescription(
-                      new RTCSessionDescription(peerData.answer),
+                    console.log(
+                      `Получен ответ от ${remoteUserId}:`,
+                      peerData.answer,
                     );
+
+                    if (peerConnection.signalingState !== "stable") {
+                      await peerConnection.setRemoteDescription(
+                        new RTCSessionDescription(peerData.answer),
+                      );
+                    }
                   }
 
+                  // Обрабатываем ICE кандидатов
                   if (peerData.iceCandidate) {
-                    console.log("Получен ICE кандидат:", peerData.iceCandidate);
-                    await peerRef.current.addIceCandidate(
+                    console.log(
+                      `Получен ICE кандидат от ${remoteUserId}:`,
+                      peerData.iceCandidate,
+                    );
+
+                    await peerConnection.addIceCandidate(
                       new RTCIceCandidate(peerData.iceCandidate),
                     );
                   }
                 } catch (error) {
                   console.error(
-                    "Ошибка при обработке WebRTC сообщения:",
+                    `Ошибка при обработке WebRTC сообщения от ${remoteUserId}:`,
                     error,
                   );
                 }
@@ -149,49 +178,98 @@ const VideoCall = () => {
       }
 
       // Закрываем все peer connections
-      if (peerRef.current) {
-        peerRef.current.close();
-        peerRef.current = null;
-      }
-
-      Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
+      Object.values(peerConnectionsRef.current).forEach((pc) => {
+        pc.close();
+      });
       peerConnectionsRef.current = {};
     };
   }, [connection, isVideoChat, localStream]);
 
+  // Эффект для инициализации соединений с существующими клиентами при включении видео
+  useEffect(() => {
+    if (
+      isVideoChat &&
+      localStream &&
+      socketRef.current &&
+      chatClients.length > 0
+    ) {
+      // Инициируем соединения со всеми клиентами, кроме себя
+      const initConnections = async () => {
+        for (const clientId of chatClients) {
+          if (clientId !== userId && !peerConnectionsRef.current[clientId]) {
+            console.log(`Инициируем соединение с ${clientId}`);
+
+            const peerConnection = createPeerConnection(localStream, clientId);
+            peerConnectionsRef.current[clientId] = peerConnection;
+
+            try {
+              // Создаем и отправляем предложение
+              const offer = await peerConnection.createOffer();
+              await peerConnection.setLocalDescription(offer);
+
+              console.log(`Отправляем предложение для ${clientId}:`, offer);
+              socketRef.current?.send(
+                JSON.stringify({
+                  type: "videochat",
+                  data: { offer: peerConnection.localDescription },
+                  userId: userId,
+                }),
+              );
+            } catch (err) {
+              console.error(
+                `Ошибка при создании предложения для ${clientId}:`,
+                err,
+              );
+            }
+          }
+        }
+      };
+
+      initConnections();
+    }
+  }, [isVideoChat, localStream, chatClients]);
+
   // Создание peer connection
-  const createPeerConnection = (stream: MediaStream) => {
-    console.log("Создаем новое peer connection");
+  const createPeerConnection = (stream: MediaStream, remoteUserId: string) => {
+    console.log(`Создаем peer connection для ${remoteUserId}`);
+
     const peerConnection = new RTCPeerConnection(configuration);
 
     // Добавляем все треки из локального потока
     stream.getTracks().forEach((track) => {
-      console.log("Добавляем трек в peer connection:", track.kind);
+      console.log(
+        `Добавляем трек ${track.kind} в peer connection для ${remoteUserId}`,
+      );
       peerConnection.addTrack(track, stream);
     });
 
     // Обработка входящих треков
     peerConnection.ontrack = (event) => {
-      console.log("Получен удаленный трек:", event.streams);
-      const remoteStream = event.streams[0];
-      const streamId = Date.now() + Math.random().toString(36).substring(7);
+      console.log(`Получен удаленный трек от ${remoteUserId}:`, event.streams);
 
-      console.log("Добавляем удаленный поток:", streamId);
-      setVideoClients((prev) => ({
-        ...prev,
-        [streamId]: remoteStream,
-      }));
+      if (event.streams && event.streams[0]) {
+        const remoteStream = event.streams[0];
+
+        console.log(`Добавляем удаленный поток от ${remoteUserId}`);
+        setVideoClients((prev) => ({
+          ...prev,
+          [remoteUserId]: remoteStream,
+        }));
+      }
     };
 
     // Обработка ICE кандидатов
     peerConnection.onicecandidate = (event) => {
       if (event.candidate) {
-        console.log("Отправляем ICE кандидат:", event.candidate);
+        console.log(
+          `Отправляем ICE кандидат для ${remoteUserId}:`,
+          event.candidate,
+        );
         socketRef.current?.send(
           JSON.stringify({
             type: "videochat",
             data: { iceCandidate: event.candidate },
-            userId,
+            userId: userId,
           }),
         );
       }
@@ -199,11 +277,39 @@ const VideoCall = () => {
 
     // Логирование состояния соединения
     peerConnection.oniceconnectionstatechange = () => {
-      console.log("ICE Connection State:", peerConnection.iceConnectionState);
+      console.log(
+        `ICE Connection State для ${remoteUserId}:`,
+        peerConnection.iceConnectionState,
+      );
+
+      // Если соединение разорвано, удаляем его
+      if (
+        peerConnection.iceConnectionState === "disconnected" ||
+        peerConnection.iceConnectionState === "failed" ||
+        peerConnection.iceConnectionState === "closed"
+      ) {
+        console.log(`Соединение с ${remoteUserId} закрыто`);
+
+        // Удаляем видео клиента
+        setVideoClients((prev) => {
+          const newClients = { ...prev };
+          delete newClients[remoteUserId];
+          return newClients;
+        });
+
+        // Удаляем peer connection
+        if (peerConnectionsRef.current[remoteUserId]) {
+          peerConnectionsRef.current[remoteUserId].close();
+          delete peerConnectionsRef.current[remoteUserId];
+        }
+      }
     };
 
     peerConnection.onsignalingstatechange = () => {
-      console.log("Signaling State:", peerConnection.signalingState);
+      console.log(
+        `Signaling State для ${remoteUserId}:`,
+        peerConnection.signalingState,
+      );
     };
 
     return peerConnection;
@@ -211,8 +317,6 @@ const VideoCall = () => {
 
   // Инициализация камеры
   const initializeCamera = async () => {
-    console.log("Инициализация камеры...");
-
     try {
       // Проверяем поддержку getUserMedia
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -251,7 +355,6 @@ const VideoCall = () => {
       return stream;
     } catch (error) {
       console.error("Ошибка при инициализации камеры:", error);
-      alert(`Не удалось получить доступ к камере: ${error.message}`);
       return null;
     }
   };
@@ -288,11 +391,11 @@ const VideoCall = () => {
       socketRef.current = null;
     }
 
-    // Закрываем peer connection
-    if (peerRef.current) {
-      peerRef.current.close();
-      peerRef.current = null;
-    }
+    // Закрываем все peer connections
+    Object.values(peerConnectionsRef.current).forEach((pc) => {
+      pc.close();
+    });
+    peerConnectionsRef.current = {};
 
     setIsVideoChat(false);
     setVideoClients({});
@@ -313,12 +416,13 @@ const VideoCall = () => {
         localStreamRef.current.srcObject = null;
       }
 
-      // Закрываем peer connection
-      if (peerRef.current) {
-        peerRef.current.close();
-        peerRef.current = null;
-      }
+      // Закрываем все peer connections
+      Object.values(peerConnectionsRef.current).forEach((pc) => {
+        pc.close();
+      });
+      peerConnectionsRef.current = {};
 
+      setVideoClients({});
       setIsVideoChat(false);
       return;
     }
@@ -329,34 +433,9 @@ const VideoCall = () => {
 
     // Сохраняем поток в состоянии
     setLocalStream(stream);
-
-    // Создаем peer connection
-    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-      const peerConnection = createPeerConnection(stream);
-      peerRef.current = peerConnection;
-
-      // Создаем и отправляем предложение
-      try {
-        console.log("Создаем предложение");
-        const offer = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offer);
-
-        console.log("Отправляем предложение:", offer);
-        socketRef.current.send(
-          JSON.stringify({
-            type: "videochat",
-            data: { offer: peerConnection.localDescription },
-            userId,
-          }),
-        );
-      } catch (err) {
-        console.error("Ошибка при создании предложения:", err);
-      }
-    } else {
-      console.error("WebSocket соединение не активно");
-    }
-
     setIsVideoChat(true);
+
+    // Соединения с другими клиентами будут инициализированы в useEffect
   };
 
   return (
@@ -376,13 +455,14 @@ const VideoCall = () => {
             style={{ border: "1px solid #ccc", backgroundColor: "#f0f0f0" }}
           />
 
-          <h3>Участники:</h3>
+          <h3>Участники: {chatClients.length}</h3>
           <ul>
             {chatClients.map((user) => (
-              <li key={user}>{user}</li>
+              <li key={user}>{user === userId ? `${user} (вы)` : user}</li>
             ))}
           </ul>
 
+          <h3>Видео участников: {Object.keys(videoClients).length}</h3>
           <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
             {Object.entries(videoClients).map(([clientId, stream]) => (
               <div key={clientId} style={{ margin: "10px" }}>
@@ -393,17 +473,31 @@ const VideoCall = () => {
                   height={300}
                   ref={(el) => {
                     if (el && el.srcObject !== stream) {
+                      console.log(`Привязываем поток к видео для ${clientId}`);
                       el.srcObject = stream;
                     }
                   }}
                   poster={image}
+                  style={{ border: "1px solid #ccc" }}
                 />
                 <p>ID: {clientId}</p>
               </div>
             ))}
           </div>
 
-          <button onClick={handleVideoChat}>
+          <button
+            onClick={handleVideoChat}
+            style={{
+              padding: "10px 20px",
+              backgroundColor: isVideoChat ? "#f44336" : "#4CAF50",
+              color: "white",
+              border: "none",
+              borderRadius: "4px",
+              cursor: "pointer",
+              fontSize: "16px",
+              marginTop: "10px",
+            }}
+          >
             {isVideoChat ? "Отключить видео" : "Подключить видео"}
           </button>
         </>
@@ -413,22 +507,56 @@ const VideoCall = () => {
         <div>
           <div style={{ marginTop: "20px" }}>
             <h4>Чат:</h4>
-            {chatMessages.map((msg, idx) => (
-              <p key={idx}>
-                <strong>{msg.from}:</strong> {msg.text}
-              </p>
-            ))}
+            <div
+              style={{
+                maxHeight: "200px",
+                overflowY: "auto",
+                border: "1px solid #ddd",
+                padding: "10px",
+                borderRadius: "4px",
+              }}
+            >
+              {chatMessages.map((msg, idx) => (
+                <p
+                  key={idx}
+                  style={{
+                    margin: "5px 0",
+                    padding: "5px",
+                    backgroundColor:
+                      msg.from === userId ? "#e3f2fd" : "transparent",
+                    borderRadius: "4px",
+                  }}
+                >
+                  <strong>{msg.from}:</strong> {msg.text}
+                </p>
+              ))}
+            </div>
           </div>
 
-          <div style={{ marginTop: "20px" }}>
+          <div style={{ marginTop: "20px", display: "flex", gap: "10px" }}>
             <input
               value={textMessage}
               onChange={(e) => setTextMessage(e.target.value)}
               placeholder="Введите сообщение"
+              style={{
+                flex: 1,
+                padding: "8px",
+                borderRadius: "4px",
+                border: "1px solid #ddd",
+              }}
+              onKeyPress={(e) => e.key === "Enter" && sendMessage()}
             />
             <button
               disabled={socketRef.current?.readyState === 3}
               onClick={sendMessage}
+              style={{
+                padding: "8px 16px",
+                backgroundColor: "#2196F3",
+                color: "white",
+                border: "none",
+                borderRadius: "4px",
+                cursor: "pointer",
+              }}
             >
               Отправить
             </button>
@@ -436,7 +564,19 @@ const VideoCall = () => {
         </div>
       )}
 
-      <button onClick={connection ? handleDisconnect : handleConnect}>
+      <button
+        onClick={connection ? handleDisconnect : handleConnect}
+        style={{
+          padding: "10px 20px",
+          backgroundColor: connection ? "#f44336" : "#2196F3",
+          color: "white",
+          border: "none",
+          borderRadius: "4px",
+          cursor: "pointer",
+          fontSize: "16px",
+          marginTop: "20px",
+        }}
+      >
         {connection ? "Отключиться" : "Подключиться"}
       </button>
     </div>
