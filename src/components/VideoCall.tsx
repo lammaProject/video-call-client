@@ -33,7 +33,7 @@ const VideoCall = () => {
         try {
           // Инициализируем соединение при подключении
           socketRef.current = new WebSocket(
-            "wss://video-chat-server-production.up.railway.app/ws?id=" + userId,
+            "ws://192.168.0.18:8080/ws?id=4" + userId,
           );
 
           socketRef.current.onopen = () => {
@@ -142,11 +142,22 @@ const VideoCall = () => {
     if (!devices) {
       return alert("Девайсы не найдены");
     }
+    const videoDevices = devices.filter(
+      (device) => device.kind === "videoinput",
+    );
+    if (videoDevices.length === 0) {
+      alert("Видеоустройства не обнаружены!");
+      return;
+    }
 
     const stream = await navigator.mediaDevices.getUserMedia({
       video: true,
-      audio: true,
+      audio: false,
     });
+
+    console.log("Доступ получен, stream:", stream);
+    console.log("Stream active:", stream.active);
+    console.log("Video tracks:", stream.getVideoTracks());
 
     if (localStreamRef.current) {
       localStreamRef.current.srcObject = stream;
@@ -211,7 +222,6 @@ const VideoCall = () => {
               playsInline
               width={400}
               height={300}
-              poster={image}
             />
           )}
           <h3>Участники:</h3>
