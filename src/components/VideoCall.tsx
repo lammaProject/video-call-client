@@ -7,10 +7,11 @@ const VideoCall = ({ userId, wsUrl }) => {
   const [localStream, setLocalStream] = useState(null);
   const [remoteStreams, setRemoteStreams] = useState(new Map());
   const [connectedUsers, setConnectedUsers] = useState(new Set());
+  const [isReady, setIsReady] = useState(false);
 
   const localVideoRef = useRef(null);
   const peerConnections = useRef(new Map());
-  const remoteVideoRefs = useRef(new Map());
+  const wsRef = useRef(null);
 
   const configuration = {
     iceServers: [
@@ -19,9 +20,40 @@ const VideoCall = ({ userId, wsUrl }) => {
     ],
   };
 
-  // Инициализация WebSocket
+  // Получение локального видео
   useEffect(() => {
+    const getLocalVideo = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true,
+        });
+
+        setLocalStream(stream);
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+        }
+        setIsReady(true);
+      } catch (error) {
+        console.error("Error accessing media devices:", error);
+      }
+    };
+
+    getLocalVideo();
+
+    return () => {
+      if (localStream) {
+        localStream.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, []);
+
+  // Инициализация WebSocket только после получения локального видео
+  useEffect(() => {
+    if (!isReady || !localStream) return;
+
     const websocket = new WebSocket(`${wsUrl}?id=${userId}`);
+    wsRef.current = websocket;
 
     websocket.onopen = () => {
       console.log("WebSocket connected");
@@ -36,28 +68,35 @@ const VideoCall = ({ userId, wsUrl }) => {
         case "register":
           // Получили список существующих пользователей
           if (data.clients) {
-            Object.keys(data.clients).forEach((clientId) => {
-              if (clientId !== userId) {
+            for (const clientId of Object.keys(data.clients)) {
+              if (clientId !== userId && data.clients[clientId]) {
+                console.log("Creating offer for existing user:", clientId);
                 setConnectedUsers((prev) => new Set([...prev, clientId]));
-                createPeerConnection(clientId, true);
+                await createPeerConnection(clientId, true);
               }
-            });
+            }
           }
           break;
 
         case "new-user":
-          // Новый пользователь подключился
-          const newUserId = Object.keys(data.clients)[0];
+          // Новый пользователь подключился - ждем offer от него
+          const newUserId = Object.keys(data.clients).find(
+            (id) => data.clients[id],
+          );
           if (newUserId && newUserId !== userId) {
+            console.log("New user connected:", newUserId);
             setConnectedUsers((prev) => new Set([...prev, newUserId]));
-            // Не создаем соединение здесь - ждем offer от нового пользователя
           }
           break;
 
         case "user-left":
           // Пользователь отключился
-          const leftUserId = Object.keys(data.clients)[0];
-          handleUserLeft(leftUserId);
+          const leftUserId = Object.keys(data.clients).find(
+            (id) => !data.clients[id],
+          );
+          if (leftUserId) {
+            handleUserLeft(leftUserId);
+          }
           break;
 
         case "videochat":
@@ -79,38 +118,16 @@ const VideoCall = ({ userId, wsUrl }) => {
       websocket.close();
       cleanup();
     };
-  }, [userId, wsUrl]);
-
-  // Получение локального видео
-  useEffect(() => {
-    const getLocalVideo = async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: true,
-        });
-
-        setLocalStream(stream);
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-        }
-      } catch (error) {
-        console.error("Error accessing media devices:", error);
-      }
-    };
-
-    getLocalVideo();
-
-    return () => {
-      if (localStream) {
-        localStream.getTracks().forEach((track) => track.stop());
-      }
-    };
-  }, []);
+  }, [isReady, localStream, userId, wsUrl]);
 
   const createPeerConnection = useCallback(
     async (remoteUserId, createOffer = false) => {
+      console.log(
+        `Creating peer connection for ${remoteUserId}, createOffer: ${createOffer}`,
+      );
+
       if (peerConnections.current.has(remoteUserId)) {
+        console.log("Peer connection already exists for", remoteUserId);
         return peerConnections.current.get(remoteUserId);
       }
 
@@ -120,13 +137,16 @@ const VideoCall = ({ userId, wsUrl }) => {
       // Добавляем локальные треки
       if (localStream) {
         localStream.getTracks().forEach((track) => {
+          console.log(
+            `Adding ${track.kind} track to peer connection for ${remoteUserId}`,
+          );
           pc.addTrack(track, localStream);
         });
       }
 
       // Обработка входящих треков
       pc.ontrack = (event) => {
-        console.log("Received remote track from", remoteUserId);
+        console.log(`Received ${event.track.kind} track from ${remoteUserId}`);
         const [remoteStream] = event.streams;
 
         setRemoteStreams((prev) => {
@@ -138,16 +158,23 @@ const VideoCall = ({ userId, wsUrl }) => {
 
       // Обработка ICE кандидатов
       pc.onicecandidate = (event) => {
-        if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(
+        if (
+          event.candidate &&
+          wsRef.current &&
+          wsRef.current.readyState === WebSocket.OPEN
+        ) {
+          console.log("Sending ICE candidate to", remoteUserId);
+          wsRef.current.send(
             JSON.stringify({
               type: "videochat",
               iceCandidate: {
                 candidate: event.candidate.candidate,
                 sdpMLineIndex: event.candidate.sdpMLineIndex,
                 sdpMid: event.candidate.sdpMid,
+                usernameFragment: event.candidate.usernameFragment,
               },
               to: remoteUserId,
+              from: userId,
             }),
           );
         }
@@ -159,14 +186,21 @@ const VideoCall = ({ userId, wsUrl }) => {
         );
       };
 
+      pc.onconnectionstatechange = () => {
+        console.log(
+          `Connection state with ${remoteUserId}: ${pc.connectionState}`,
+        );
+      };
+
       // Создаем offer если нужно
       if (createOffer) {
         try {
           const offer = await pc.createOffer();
           await pc.setLocalDescription(offer);
 
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            console.log("Sending offer to", remoteUserId);
+            wsRef.current.send(
               JSON.stringify({
                 type: "videochat",
                 offer: {
@@ -174,6 +208,7 @@ const VideoCall = ({ userId, wsUrl }) => {
                   sdp: offer.sdp,
                 },
                 to: remoteUserId,
+                from: userId,
               }),
             );
           }
@@ -184,30 +219,34 @@ const VideoCall = ({ userId, wsUrl }) => {
 
       return pc;
     },
-    [localStream, ws],
+    [localStream, userId],
   );
 
   const handleVideoChatMessage = async (data) => {
+    console.log("Handling video chat message:", data);
     const { from, offer, answer, iceCandidate } = data;
 
     if (offer) {
+      console.log("Received offer from", from);
       // Получили offer - создаем peer connection и отправляем answer
       const pc = await createPeerConnection(from, false);
 
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
+        const answerDesc = await pc.createAnswer();
+        await pc.setLocalDescription(answerDesc);
 
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          console.log("Sending answer to", from);
+          wsRef.current.send(
             JSON.stringify({
               type: "videochat",
               answer: {
-                type: answer.type,
-                sdp: answer.sdp,
+                type: answerDesc.type,
+                sdp: answerDesc.sdp,
               },
               to: from,
+              from: userId,
             }),
           );
         }
@@ -217,6 +256,7 @@ const VideoCall = ({ userId, wsUrl }) => {
     }
 
     if (answer) {
+      console.log("Received answer from", from);
       // Получили answer
       const pc = peerConnections.current.get(from);
       if (pc) {
@@ -229,11 +269,18 @@ const VideoCall = ({ userId, wsUrl }) => {
     }
 
     if (iceCandidate) {
+      console.log("Received ICE candidate from", from);
       // Получили ICE кандидата
       const pc = peerConnections.current.get(from);
-      if (pc) {
+      if (pc && pc.remoteDescription) {
         try {
-          await pc.addIceCandidate(new RTCIceCandidate(iceCandidate));
+          await pc.addIceCandidate(
+            new RTCIceCandidate({
+              candidate: iceCandidate.candidate,
+              sdpMLineIndex: iceCandidate.sdpMLineIndex,
+              sdpMid: iceCandidate.sdpMid,
+            }),
+          );
         } catch (error) {
           console.error("Error adding ICE candidate:", error);
         }
@@ -242,6 +289,7 @@ const VideoCall = ({ userId, wsUrl }) => {
   };
 
   const handleUserLeft = (userId) => {
+    console.log("User left:", userId);
     // Удаляем пользователя из списка подключенных
     setConnectedUsers((prev) => {
       const newSet = new Set(prev);
@@ -336,6 +384,21 @@ const VideoCall = ({ userId, wsUrl }) => {
     borderRadius: "4px",
     fontSize: "14px",
   };
+
+  if (!isReady) {
+    return (
+      <div
+        style={{
+          ...containerStyle,
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+        }}
+      >
+        <div style={{ color: "white" }}>Initializing camera...</div>
+      </div>
+    );
+  }
 
   return (
     <div style={containerStyle}>
