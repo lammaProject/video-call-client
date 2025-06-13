@@ -30,8 +30,9 @@ const VideoCall = () => {
         try {
           // Инициализируем соединение при подключении
           socketRef.current = new WebSocket(
-            "ws://192.168.0.18:8080/ws?id=" + userId,
+            "ws://video-chat-server-production.up.railway.app/ws?id=" + userId,
           );
+
           socketRef.current.onopen = () => {
             console.log("Подключено к серверу");
           };
