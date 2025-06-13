@@ -174,6 +174,7 @@ const VideoCall = () => {
             JSON.stringify({
               type: "videochat",
               "ice-candidate": event.candidate,
+              userId,
             }),
           );
         }
@@ -187,6 +188,7 @@ const VideoCall = () => {
             JSON.stringify({
               type: "videochat",
               offer: peerConnection.localDescription,
+              userId,
             }),
           );
         });
