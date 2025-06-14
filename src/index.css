@@ -1,27 +1,6 @@
-@import "tailwindcss";
-
-#root {
-    width: 100%;
-    height: 100vh;
-}
-
-p {
-    width: fit-content;
-    color: #FBEEC1;
-}
-
-button {
-    color: white;
-    background-color: #282828;
-    padding: 10px;
-    border: none;
-    cursor: pointer;
-    outline: none;
-    transition: all .3s ease-in-out;
-    font-size: 12px;
-
-    &:hover {
-        background-color: #240090;
-        color: white
-    }
+html, body, #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
 }

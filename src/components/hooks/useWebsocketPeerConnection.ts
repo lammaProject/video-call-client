@@ -7,21 +7,25 @@ import {
 } from "react";
 
 interface Props {
-  wsUrl: string;
   userId: string;
+  roomId: string;
   localStream: MediaStream | null;
   localStreamRef: RefObject<MediaStream | null>;
-  configurationPeer: { iceServers: { urls: string }[] };
   connection: boolean;
-  setConnection: (connection: boolean) => void;
 }
 
+const configuration = {
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+  ],
+};
+
 const useWebsocketPeerConnection = ({
-  wsUrl,
   userId,
+  roomId,
   localStream,
   localStreamRef,
-  configurationPeer,
   connection,
 }: Props) => {
   const [remoteStreams, setRemoteStreams] = useState(new Map());
@@ -31,9 +35,11 @@ const useWebsocketPeerConnection = ({
   const wsRef = useRef<WebSocket>(null);
 
   useEffect(() => {
+    const token = localStorage.getItem("token");
     if ((!localStream && !localStreamRef.current) || !connection) return;
-
-    const websocket = new WebSocket(`${wsUrl}?id=${userId}`);
+    const websocket = new WebSocket(
+      `wss://video-chat-server-production.up.railway.app/ws/${roomId}?token=${token}`,
+    );
     wsRef.current = websocket;
     websocket.onmessage = async (event) => {
       const data = JSON.parse(event.data);
@@ -101,7 +107,7 @@ const useWebsocketPeerConnection = ({
         return peerConnections.current.get(remoteUserId);
       }
 
-      const pc = new RTCPeerConnection(configurationPeer);
+      const pc = new RTCPeerConnection(configuration);
       peerConnections.current.set(remoteUserId, pc);
 
       // Добавляем локальные треки
