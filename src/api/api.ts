@@ -2,7 +2,7 @@ import axios from "axios";
 import type { Room, User } from "./type.ts";
 
 const $api = axios.create({
-  baseURL: "http://localhost:8080",
+  baseURL: "https://video-chat-server-production.up.railway.app",
   headers: {
     "Content-Type": "application/json",
   },
