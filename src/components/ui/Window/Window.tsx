@@ -1,11 +1,14 @@
 import { Button, WindowContent, WindowHeader, Window } from "react95";
+import type { CSSProperties, ReactNode } from "react";
 
 interface Props {
   headerText: string;
-  contentText: string;
+  contentText?: string;
   isOpen: boolean;
   setIsOpen: (isOpen: boolean) => void;
   active?: boolean;
+  children?: ReactNode;
+  style?: CSSProperties;
 }
 
 const WindowCustom = ({
@@ -14,6 +17,8 @@ const WindowCustom = ({
   contentText,
   isOpen,
   setIsOpen,
+  children,
+  style,
 }: Props) => {
   const handleClose = () => {
     setIsOpen(false);
@@ -22,7 +27,11 @@ const WindowCustom = ({
   if (!isOpen) return null;
 
   return (
-    <Window style={{ position: "fixed", bottom: "70px", right: "15px" }}>
+    <Window
+      style={
+        style ? style : { position: "fixed", bottom: "70px", right: "15px" }
+      }
+    >
       <WindowHeader
         style={{
           display: "flex",
@@ -36,7 +45,7 @@ const WindowCustom = ({
           <Button variant={"raised"}>X</Button>
         </Button>
       </WindowHeader>
-      <WindowContent>{contentText}</WindowContent>
+      <WindowContent>{children ?? contentText}</WindowContent>
     </Window>
   );
 };

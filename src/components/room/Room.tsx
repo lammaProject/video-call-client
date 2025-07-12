@@ -1,5 +1,5 @@
-import { useLocaleVideo } from "../hooks/useLocaleVideo.ts";
-import { useWebsocketPeerConnection } from "../hooks/useWebsocketPeerConnection.ts";
+import { useLocaleVideo } from "./hooks/useLocaleVideo.ts";
+import { useWebsocketPeerConnection } from "./hooks/useWebsocketPeerConnection.ts";
 import { useParams } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { getProfile } from "../../api/api.ts";
@@ -13,7 +13,7 @@ const Room = () => {
   const { localStream, localStreamRef, localVideoRef } = useLocaleVideo({
     connection: true,
   });
-  console.log(data);
+
   const { remoteStreams, connectedUsers, wsRef } = useWebsocketPeerConnection({
     roomId: String(roomId),
     connection: !!data,

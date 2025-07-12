@@ -2,7 +2,7 @@ import axios from "axios";
 import type { Room, User } from "./type.ts";
 
 const $api = axios.create({
-  baseURL: "https://video-chat-server-production.up.railway.app",
+  baseURL: "http://localhost:8080",
   headers: {
     "Content-Type": "application/json",
   },
@@ -21,10 +21,10 @@ $api.interceptors.response.use(
     return response;
   },
   (error) => {
-    // if (error.response?.status === 401) {
-    //   localStorage.removeItem("token");
-    //   window.location.href = "/auth";
-    // }
+    if (error.response?.status === 401) {
+      localStorage.removeItem("token");
+      window.location.href = "/auth";
+    }
 
     return Promise.reject(error);
   },
@@ -32,16 +32,16 @@ $api.interceptors.response.use(
 
 // USERS
 export const getUsers = async () => {
-  const { data } = await $api.get<User[]>("/users");
+  const { data } = await $api.get<User[]>("/auth/users");
   return data;
 };
 
 export const getUser = async (name?: string) => {
   if (!name) {
-    const { data } = await $api.get("/users");
+    const { data } = await $api.get<User>("/auth/users");
     return data;
   }
-  const { data } = await $api.get<User>(`/users/${name}`);
+  const { data } = await $api.get<User>(`/auth/users/${name}`);
   return data;
 };
 

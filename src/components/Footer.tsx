@@ -39,6 +39,9 @@ const Footer = () => {
               }}
               onClick={() => setOpen(false)}
             >
+              <MenuListItem onClick={() => navigate(RouteConfig.main)}>
+                Home
+              </MenuListItem>
               <MenuListItem
                 onClick={
                   localStorage.getItem("token")

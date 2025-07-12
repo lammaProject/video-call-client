@@ -4,7 +4,7 @@ import { createBrowserRouter, RouterProvider } from "react-router";
 import { RouteConfig } from "./app/config/config.ts";
 import { User } from "./components/user/User.tsx";
 import { Auth } from "./components/auth/Auth.tsx";
-import { HomePanel } from "./components/HomePanel.tsx";
+import { HomePanel } from "./app/pages/main/HomePanel.tsx";
 import "./index.css";
 import App from "./App.tsx";
 import { Room } from "./components/room/Room.tsx";
